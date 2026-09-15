@@ -19,6 +19,12 @@ struct MicroManagerApp: App {
         MenuBarExtra {
             MenuPanelView()
                 .environmentObject(bridge)
+        } label: {
+            Image(nsImage: MenuBarIcon.image(for: MenuBarIcon.State.from(bridge)))
+                // The panel's content is only built when the icon is first
+                // clicked, so the bridge is wired and started from the label,
+                // which exists from launch — a login-item launch must light
+                // the pad without anyone opening the panel.
                 .task {
                     // The stack and land keys open windows, which the bridge
                     // knows nothing about, so the two are joined here.
@@ -71,8 +77,6 @@ struct MicroManagerApp: App {
                         await bridge.start()
                     }
                 }
-        } label: {
-            Image(nsImage: MenuBarIcon.image(for: MenuBarIcon.State.from(bridge)))
         }
         .menuBarExtraStyle(.window)
     }
