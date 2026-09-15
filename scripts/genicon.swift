@@ -2,9 +2,13 @@
 // lights them. Run by bundle.sh at build time — the icon is generated, not a
 // checked-in binary.
 //
-//   swift scripts/genicon.swift <output.iconset>
+//   swift scripts/genicon.swift <output.iconset>   the ten PNGs an iconset holds
+//   swift scripts/genicon.swift <output.icns>      the finished icon, no iconutil
 //
-// Emits the ten PNGs `iconutil -c icns` expects.
+// The .icns is assembled here rather than by `iconutil -c icns` because that
+// tool rejects valid iconsets on some systems ("Invalid Iconset" on macOS 26
+// with only the Command Line Tools installed). An .icns is just a container of
+// PNGs tagged by size, so there is nothing to lose by writing it directly.
 
 import AppKit
 
@@ -92,7 +96,7 @@ func draw(in ctx: CGContext) {
     }
 }
 
-func writePNG(size: Int, scale: Int, to url: URL) {
+func renderPNG(size: Int, scale: Int) -> Data {
     let pixels = size * scale
     guard let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
@@ -110,19 +114,56 @@ func writePNG(size: Int, scale: Int, to url: URL) {
     NSGraphicsContext.restoreGraphicsState()
 
     guard let data = rep.representation(using: .png, properties: [:]) else {
-        fatalError("could not encode \(url.lastPathComponent)")
+        fatalError("could not encode \(size)x\(size)@\(scale)x")
     }
-    try! data.write(to: url)
+    return data
+}
+
+/// The ten entries of a modern icon: point size, scale, iconset file name and
+/// the four-character type the .icns container tags a PNG of that size with.
+let entries: [(size: Int, scale: Int, type: String)] = [
+    (16, 1, "icp4"), (16, 2, "ic11"),
+    (32, 1, "icp5"), (32, 2, "ic12"),
+    (128, 1, "ic07"), (128, 2, "ic13"),
+    (256, 1, "ic08"), (256, 2, "ic14"),
+    (512, 1, "ic09"), (512, 2, "ic10"),
+]
+
+func bigEndian(_ value: Int) -> Data {
+    var be = UInt32(value).bigEndian
+    return Data(bytes: &be, count: 4)
+}
+
+func writeIconset(to out: URL) {
+    try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    for entry in entries {
+        let suffix = entry.scale == 2 ? "@2x" : ""
+        let url = out.appendingPathComponent("icon_\(entry.size)x\(entry.size)\(suffix).png")
+        try! renderPNG(size: entry.size, scale: entry.scale).write(to: url)
+    }
+}
+
+func writeICNS(to out: URL) {
+    var body = Data()
+    for entry in entries {
+        let png = renderPNG(size: entry.size, scale: entry.scale)
+        body.append(Data(entry.type.utf8))
+        body.append(bigEndian(8 + png.count))
+        body.append(png)
+    }
+    var file = Data("icns".utf8)
+    file.append(bigEndian(8 + body.count))
+    file.append(body)
+    try! file.write(to: out)
 }
 
 guard CommandLine.arguments.count == 2 else {
-    FileHandle.standardError.write(Data("usage: genicon.swift <output.iconset>\n".utf8))
+    FileHandle.standardError.write(Data("usage: genicon.swift <output.iconset | output.icns>\n".utf8))
     exit(1)
 }
-let out = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
-try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-
-for size in [16, 32, 128, 256, 512] {
-    writePNG(size: size, scale: 1, to: out.appendingPathComponent("icon_\(size)x\(size).png"))
-    writePNG(size: size, scale: 2, to: out.appendingPathComponent("icon_\(size)x\(size)@2x.png"))
+let path = CommandLine.arguments[1]
+if path.hasSuffix(".icns") {
+    writeICNS(to: URL(fileURLWithPath: path))
+} else {
+    writeIconset(to: URL(fileURLWithPath: path, isDirectory: true))
 }

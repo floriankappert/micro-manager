@@ -15,7 +15,8 @@
 #
 # Set WL_SIGN_IDENTITY to choose the identity explicitly (CI does this);
 # otherwise the first Developer ID or Apple Development identity in the
-# keychain is used.
+# keychain is used. With neither, run scripts/make-signing-cert.sh once: a
+# self-signed certificate is enough to keep the grant across rebuilds.
 
 set -euo pipefail
 
@@ -47,11 +48,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library"
 cp ".build/release/WLMicroManager" "$APP/Contents/MacOS/$APP_NAME"
 
 echo "==> drawing icon"
-ICONSET="$OUT_DIR/AppIcon.iconset"
-rm -rf "$ICONSET"
-swift scripts/genicon.swift "$ICONSET"
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-rm -rf "$ICONSET"
+# genicon writes the .icns itself; iconutil is not involved because it rejects
+# valid iconsets on some systems.
+swift scripts/genicon.swift "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -104,11 +103,16 @@ echo "==> signing"
 IDENTITY="${WL_SIGN_IDENTITY:-}"
 if [[ -z "$IDENTITY" ]]; then
     IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -m1 -E '"(Apple Development|Developer ID Application)[^"]*"' \
+        | grep -m1 -E '"(Apple Development|Developer ID Application|MicroManager Local Signing)[^"]*"' \
         | sed -E 's/.*"(.*)"/\1/' || true)"
 fi
 
-if [[ -n "$IDENTITY" ]]; then
+if [[ "$IDENTITY" == "MicroManager Local Signing" ]]; then
+    # The self-signed certificate from scripts/make-signing-cert.sh: stable
+    # identity, but nothing Apple's timestamp service will vouch for.
+    echo "    identity: $IDENTITY (local)"
+    SIGN=(codesign --force --options runtime --sign "$IDENTITY")
+elif [[ -n "$IDENTITY" ]]; then
     echo "    identity: $IDENTITY"
     SIGN=(codesign --force --options runtime --timestamp --sign "$IDENTITY")
 else
