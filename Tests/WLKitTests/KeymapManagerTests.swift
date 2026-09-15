@@ -30,6 +30,46 @@ final class KeymapManagerTests: XCTestCase {
         XCTAssertEqual(KeymapManager.activeLayerKeymap(config)?[0], ["KC_F13", "KC_F14"])
     }
 
+    /// The pad reports which layer it is on; the codes have to land there and
+    /// nowhere else, or a pad on layer 2 keeps its stock keys while every
+    /// write answers ok.
+    func testApplyingTargetsTheRequestedLayerOnly() throws {
+        let config = try backupKeymap()
+        let next = try KeymapManager.withAgentKeymap(config, layer: 1)
+        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(next, layer: 1))
+        XCTAssertFalse(KeymapManager.isAgentKeymapApplied(next, layer: 0),
+                       "layer 1 stays the stock map")
+        XCTAssertEqual(KeymapManager.activeLayerKeymap(next, layer: 0),
+                       KeymapManager.activeLayerKeymap(config, layer: 0))
+    }
+
+    /// The spare layers have no joystick sectors, so the stick has to be
+    /// given its four cardinals there, with the angles layer 1 uses.
+    func testApplyingSeedsJoystickSectorsOnABareLayer() throws {
+        let config = try backupKeymap()
+        let next = try KeymapManager.withAgentKeymap(config, layer: 1)
+        let layout = try XCTUnwrap(KeymapManager.activeLayerLayout(next, layer: 1))
+        let joystick = try XCTUnwrap(layout["joystick"] as? [String: Any])
+        let sectors = try XCTUnwrap(joystick["sectors"] as? [[String: Any]])
+        XCTAssertEqual(sectors.count, 4)
+        XCTAssertEqual(Set(sectors.compactMap { $0["k"] as? String }),
+                       ["KV_OAI_AG15", "KV_OAI_AG16", "KV_OAI_AG17", "KV_OAI_AG18"])
+        let north = try XCTUnwrap(sectors.first { $0["k"] as? String == "KV_OAI_AG15" })
+        XCTAssertEqual(north["a1"] as? Double, 0.1875, "geometry borrowed from layer 1")
+        XCTAssertEqual(north["a2"] as? Double, 0.3125)
+        XCTAssertEqual(joystick["type"] as? String, "JOYSTICK", "the rest of the object is untouched")
+        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(next, layer: 1))
+    }
+
+    /// A layer the file does not have falls back to the first rather than
+    /// crashing or writing nowhere.
+    func testOutOfRangeLayerFallsBackToTheFirst() throws {
+        let config = try backupKeymap()
+        let next = try KeymapManager.withAgentKeymap(config, layer: 99)
+        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(next, layer: 0))
+        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(next, layer: 99))
+    }
+
     /// The whole pad is managed now — every key must carry its own AG code,
     /// each key's code matching its index so lights and presses line up.
     func testApplyingBindsEveryKeyToItsOwnCode() throws {

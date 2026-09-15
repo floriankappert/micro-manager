@@ -36,6 +36,31 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(bindings.text(for: 11), "Summarise your progress")
     }
 
+    /// A pad with single keys where the wide cap sits can move the voice role.
+    func testVoiceKeysCanMove() {
+        let bindings = parse(#"{"voice": [11, 12]}"#)
+        XCTAssertEqual(bindings.voiceKeys, [11, 12])
+        XCTAssertTrue(bindings.isVoiceKey(11))
+        XCTAssertTrue(bindings.isVoiceKey(12))
+        XCTAssertNil(bindings.text(for: 12), "a voice key sheds its default macro")
+        XCTAssertFalse(bindings.isVoiceKey(10))
+        XCTAssertEqual(bindings.text(for: 9), "Open PRs for all active GitButler branches")
+        XCTAssertEqual(bindings.flexKeys, [9, 10, 11, 12].filter { $0 != 10 })
+    }
+
+    func testVoiceKeysAcceptStringsAndDefaultWhenEmpty() {
+        XCTAssertEqual(parse(#"{"voice": ["11", "12"]}"#).voiceKeys, [11, 12])
+        XCTAssertEqual(parse(#"{"voice": []}"#).voiceKeys, Pad.voiceKeyIDs)
+        XCTAssertEqual(parse(#"{}"#).voiceKeys, Pad.voiceKeyIDs)
+    }
+
+    func testExplicitTextStillWinsOnAVoiceKey() {
+        let bindings = parse(#"{"voice": [11, 12], "keys": {"12": "Run but pull"}}"#)
+        XCTAssertEqual(bindings.text(for: 12), "Run but pull")
+        XCTAssertFalse(bindings.isVoiceKey(12))
+        XCTAssertTrue(bindings.isVoiceKey(11))
+    }
+
     func testWideKeyHalvesCanDiffer() {
         let bindings = parse(#"{"keys": {"10": "left half", "11": "right half"}}"#)
         XCTAssertEqual(bindings.text(for: 10), "left half")

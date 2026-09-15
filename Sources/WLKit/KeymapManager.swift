@@ -40,6 +40,31 @@ public enum KeymapManager {
         return centre.truncatingRemainder(dividingBy: 1)
     }
 
+    /// Four cardinal sectors for a layer that has none. The angles come from
+    /// the first layer that defines sectors at those centres, so the stick
+    /// keeps the dead zones the firmware was set up with; a file with no
+    /// sectors anywhere gets quarter turns centred on the cardinals.
+    static func cardinalSectors(from layers: [[String: Any]]) -> [[String: Any]] {
+        let existing = layers
+            .compactMap { ($0["layout"] as? [String: Any])?["joystick"] as? [String: Any] }
+            .compactMap { $0["sectors"] as? [[String: Any]] }
+            .first { !$0.isEmpty } ?? []
+        return joystickCodes.map { target in
+            let match = existing.first { sector in
+                guard let a1 = sector["a1"] as? Double, let a2 = sector["a2"] as? Double
+                else { return false }
+                return abs(sectorCentre(a1, a2) - target.centre) < 0.01
+            }
+            if var sector = match {
+                sector["k"] = target.code
+                return sector
+            }
+            let a1 = (target.centre - 0.125 + 1).truncatingRemainder(dividingBy: 1)
+            let a2 = (target.centre + 0.125).truncatingRemainder(dividingBy: 1)
+            return ["a1": a1, "a2": a2, "k": target.code]
+        }
+    }
+
     /// The keycode each managed key must carry, addressed by its position in
     /// the [2, 4, 4, 3] matrix. Bindings are per key rather than per row: the
     /// stack key shares row 2 with three keys this app has no business
@@ -81,34 +106,49 @@ public enum KeymapManager {
         return config
     }
 
-    /// `layer_index` from `device.status` is 1-based against this list, so the
-    /// active layer is the first one.
-    static func activeLayerKeymap(_ config: [String: Any]) -> [[String]]? {
-        let index = config["activeProfileId"] as? Int ?? 0
-        guard let profiles = config["profiles"] as? [[String: Any]] else { return nil }
-        let profile = index < profiles.count ? profiles[index] : profiles.first
-        guard let layers = profile?["layers"] as? [[String: Any]],
-              let layer = layers.first,
-              let layout = layer["layout"] as? [String: Any],
-              let keymap = layout["keymap"] as? [[String]]
-        else { return nil }
-        return keymap
+    /// Which layer of the active profile the pad is actually on, 0-based.
+    ///
+    /// The keymap file does not say: `activeProfileId` picks the profile, but
+    /// the layer is runtime state the pad reports as `layer_index` in
+    /// `device.status`, 1-based. A pad left on its second layer - which is
+    /// where at least one Bluetooth pad sits - ignores everything written to
+    /// the first: no key reports, no per-key colours, and every write still
+    /// answers ok. Unreadable status means layer 1, as before.
+    public static func activeLayer(_ device: WLDevice) async -> Int {
+        guard let status = try? await device.callAsync("device.status"),
+              let dict = status as? [String: Any],
+              let index = dict["layer_index"] as? Int
+        else { return 0 }
+        return max(0, index - 1)
     }
 
-    static func activeLayerLayout(_ config: [String: Any]) -> [String: Any]? {
+    /// The layers of the active profile, or nil when the file has none.
+    private static func layers(_ config: [String: Any]) -> [[String: Any]]? {
         let index = config["activeProfileId"] as? Int ?? 0
         guard let profiles = config["profiles"] as? [[String: Any]] else { return nil }
         let profile = index < profiles.count ? profiles[index] : profiles.first
-        guard let layers = profile?["layers"] as? [[String: Any]],
-              let layer = layers.first
-        else { return nil }
-        return layer["layout"] as? [String: Any]
+        return profile?["layers"] as? [[String: Any]]
+    }
+
+    /// A layer that is out of range falls back to the first, so a stale
+    /// status cannot send the keys into a layer that does not exist.
+    private static func clamp(_ layer: Int, in layers: [[String: Any]]) -> Int {
+        layer < layers.count ? layer : 0
+    }
+
+    static func activeLayerKeymap(_ config: [String: Any], layer: Int = 0) -> [[String]]? {
+        activeLayerLayout(config, layer: layer)?["keymap"] as? [[String]]
+    }
+
+    static func activeLayerLayout(_ config: [String: Any], layer: Int = 0) -> [String: Any]? {
+        guard let layers = layers(config), !layers.isEmpty else { return nil }
+        return layers[clamp(layer, in: layers)]["layout"] as? [String: Any]
     }
 
     /// True when every managed key, the dial and the joystick's cardinal
-    /// sectors carry their AG codes on the active layer.
-    public static func isAgentKeymapApplied(_ config: [String: Any]) -> Bool {
-        guard let keymap = activeLayerKeymap(config) else { return false }
+    /// sectors carry their AG codes on the given layer of the active profile.
+    public static func isAgentKeymapApplied(_ config: [String: Any], layer: Int = 0) -> Bool {
+        guard let keymap = activeLayerKeymap(config, layer: layer) else { return false }
         for binding in bindings {
             guard binding.row < keymap.count,
                   binding.column < keymap[binding.row].count,
@@ -116,7 +156,7 @@ public enum KeymapManager {
             else { return false }
         }
 
-        guard let layout = activeLayerLayout(config) else { return false }
+        guard let layout = activeLayerLayout(config, layer: layer) else { return false }
         if let encoders = layout["encoders"] as? [[String]], let dial = encoders.first {
             guard dial.count >= 2, dial[0] == dialCodes[0], dial[1] == dialCodes[1] else {
                 return false
@@ -138,9 +178,9 @@ public enum KeymapManager {
         return true
     }
 
-    /// Rebinds the managed keys, leaving every other key, layer, encoder,
-    /// joystick and lighting setting untouched.
-    public static func withAgentKeymap(_ config: [String: Any]) throws -> [String: Any] {
+    /// Rebinds the managed keys on one layer of the active profile, leaving
+    /// every other key, layer, encoder, joystick and lighting setting untouched.
+    public static func withAgentKeymap(_ config: [String: Any], layer target: Int = 0) throws -> [String: Any] {
         var next = config
         let index = next["activeProfileId"] as? Int ?? 0
         guard var profiles = next["profiles"] as? [[String: Any]], !profiles.isEmpty else {
@@ -151,7 +191,8 @@ public enum KeymapManager {
         guard var layers = profile["layers"] as? [[String: Any]], !layers.isEmpty else {
             throw Failure.noProfiles
         }
-        var layer = layers[0]
+        let layerIndex = clamp(target, in: layers)
+        var layer = layers[layerIndex]
         guard var layout = layer["layout"] as? [String: Any],
               var keymap = layout["keymap"] as? [[String]]
         else { throw Failure.noProfiles }
@@ -171,8 +212,16 @@ public enum KeymapManager {
         }
 
         // The joystick's cardinal sectors; diagonals keep their keycodes.
-        if var joystick = layout["joystick"] as? [String: Any],
-           var sectors = joystick["sectors"] as? [[String: Any]] {
+        if var joystick = layout["joystick"] as? [String: Any] {
+            var sectors = joystick["sectors"] as? [[String: Any]] ?? []
+            // A spare layer ships with no sectors at all - the stock file has
+            // eight on layer 1 and none on the others - and rewriting nothing
+            // leaves the stick mute. Seed the four cardinals, borrowing the
+            // geometry of a layer that has them so the pad sees the shape it
+            // already knows; failing that, four quarter-turn sectors.
+            if sectors.isEmpty {
+                sectors = cardinalSectors(from: layers)
+            }
             for index in sectors.indices {
                 guard let a1 = sectors[index]["a1"] as? Double,
                       let a2 = sectors[index]["a2"] as? Double
@@ -188,7 +237,7 @@ public enum KeymapManager {
 
         layout["keymap"] = keymap
         layer["layout"] = layout
-        layers[0] = layer
+        layers[layerIndex] = layer
         profile["layers"] = layers
         profiles[profileIndex] = profile
         next["profiles"] = profiles
@@ -202,13 +251,15 @@ public enum KeymapManager {
         return try parse(raw)
     }
 
-    /// Returns true when it had to change something.
+    /// Rebinds the layer the pad is currently on. Returns true when it had to
+    /// change something.
     @discardableResult
     public static func apply(_ device: WLDevice) async throws -> Bool {
+        let layer = await activeLayer(device)
         let config = try await read(device)
-        if isAgentKeymapApplied(config) { return false }
+        if isAgentKeymapApplied(config, layer: layer) { return false }
 
-        let next = try withAgentKeymap(config)
+        let next = try withAgentKeymap(config, layer: layer)
         let encoded = try JSONSerialization.data(withJSONObject: next)
         guard let text = String(data: encoded, encoding: .utf8) else {
             throw Failure.unreadable("could not encode keymap")
@@ -216,7 +267,7 @@ public enum KeymapManager {
         _ = try await device.callAsync("fs.write", params: ["file": "keymap.json", "data": text])
 
         let after = try await read(device)
-        guard isAgentKeymapApplied(after) else { throw Failure.notAccepted }
+        guard isAgentKeymapApplied(after, layer: layer) else { throw Failure.notAccepted }
         return true
     }
 }

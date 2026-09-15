@@ -105,21 +105,23 @@ struct MenuPanelView: View {
         let isTabCycleKey = index == Pad.tabCycleKeyID
         let isLandKey = index == Pad.landKeyID
         let macroText = bridge.keyBindings.text(for: index)
-        let isVoiceKey = macroText == nil && Pad.voiceKeyIDs.contains(index)
+        let isVoiceKey = bridge.keyBindings.isVoiceKey(index)
         // Key index and agent slot are different orderings — the top row is
         // wired right to left — so the slot lookup goes through the pad map.
         let slot = Pad.agentSlot(for: index)
         let agent = slot.flatMap { $0 < bridge.agents.count ? bridge.agents[$0] : nil }
 
         return Button {
-            if isStackKey {
+            // Same order as the pad itself: configured text first, so a
+            // clicked key does what the real key under it would do.
+            if let macroText {
+                Task { await bridge.injectPrompt(macroText) }
+            } else if isStackKey {
                 StackPanelController.shared.toggle()
             } else if isTabCycleKey {
                 Task { await bridge.cycleTabs() }
             } else if isLandKey {
                 LandPanelController.shared.handleLandKey()
-            } else if let macroText {
-                Task { await bridge.injectPrompt(macroText) }
             } else if isVoiceKey {
                 VoiceController.shared.handleVoiceKey()
             } else if let slot, agent != nil {
@@ -151,10 +153,10 @@ struct MenuPanelView: View {
         macroText: String?,
         isVoiceKey: Bool
     ) -> String {
+        if let macroText { return "Types: \(macroText)" }
         if isStackKey { return "GitButler stack for the focused agent" }
         if isTabCycleKey { return "Cycle tabs in the focused Herdr window" }
         if isLandKey { return "Land the focused agent's branches onto the target" }
-        if let macroText { return "Type: \(macroText)" }
         if isVoiceKey { return "Right command — start or stop Superwhisper" }
         if let agent { return "\(agent.shortName) — \(agent.status)" }
         return "Key \(index)"

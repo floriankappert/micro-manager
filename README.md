@@ -150,6 +150,7 @@ the dial and joystick offer, drop a `config.json` into
     "12":    "Run but pull",
     "10+11": "Summarise what you are working on"
   },
+  "voice": [11, 12],
   "claude": { "models": ["fable", "opus"], "efforts": ["low", "high"] },
   "codex":  { "models": ["gpt-5.6-sol", "gpt-5.6-codex"] }
 }
@@ -160,6 +161,11 @@ still read it and press enter. `"10+11"` addresses the wide key as one; `"10"`
 and `"11"` address its halves. Keys the file does not mention keep their
 defaults, and an empty string unbinds a key outright. Binding the wide key to
 text replaces its right-command tap.
+
+`"voice"` names the keys that tap right command for Superwhisper. The default
+is the wide key, matrix positions 10 and 11. A pad with single keys along the
+bottom row can move the role, for example to 11 and 12; a key named there drops
+its default macro, while an explicit `"keys"` entry on it still wins.
 
 `codex.models` is your copy of what Codex's own `/model` menu offers, in its
 order — the joystick steers that menu rather than owning it, so there is nothing

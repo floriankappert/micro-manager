@@ -228,10 +228,11 @@ public final class BridgeController: ObservableObject {
                 _ = try await KeymapManager.apply(device)
                 keymapReady = true
             } else {
+                let layer = await KeymapManager.activeLayer(device)
                 let cfg = try await KeymapManager.read(device)
-                keymapReady = KeymapManager.isAgentKeymapApplied(cfg)
+                keymapReady = KeymapManager.isAgentKeymapApplied(cfg, layer: layer)
                 if !keymapReady {
-                    lastError = "The agent keys and the stack key are not bound to KV_OAI_AG00..AG06, so per-key colours will do nothing."
+                    lastError = "The agent keys and the stack key are not bound to KV_OAI_AG00..AG06 on layer \(layer + 1), so per-key colours will do nothing."
                 }
             }
         } catch {
@@ -334,20 +335,24 @@ public final class BridgeController: ObservableObject {
         let state = StatusMapper.aggregate(fetched, config)
         // Macro and voice keys share ids, so the binding decides each key's
         // light: configured text wins, the wide key falls back to voice.
-        let flexKeys = (Pad.macroKeyIDs + Pad.voiceKeyIDs).map { key -> OAI.Thread in
+        let flexKeys = keyBindings.flexKeys.map { key -> OAI.Thread in
             if keyBindings.text(for: key) != nil {
                 return StatusMapper.macroThread(id: key, config)
             }
-            if Pad.voiceKeyIDs.contains(key) {
+            if keyBindings.voiceKeys.contains(key) {
                 return StatusMapper.voiceThread(id: key, active: voiceActive, config)
             }
             return OAI.Thread(id: key, brightness: 0, effect: .off)
         }
-        let threads = StatusMapper.threads(for: fetched, config)
+        // Text beats the built-in role at the light too, or a key that now
+        // types a macro would still wear the stack key's violet.
+        let bound = keyBindings.textKeys
+        let threads = (StatusMapper.threads(for: fetched, config)
             + [StatusMapper.stackThread(open: stackPanelOpen, config),
                StatusMapper.tabCycleThread(config),
                StatusMapper.landThread(open: landPanelOpen, config)]
-            + flexKeys
+            + flexKeys)
+            .map { bound.contains($0.id) ? StatusMapper.macroThread(id: $0.id, config) : $0 }
 
         // Fingerprint the whole rendered picture, not just the aggregate, so
         // one agent changing still repaints when the worst state has not.
@@ -413,20 +418,19 @@ public final class BridgeController: ObservableObject {
     /// has to agree with `Pad`, so keep the dispatch in a single switch.
     public func handleKeyPress(_ index: Int) {
         if onKeyIntercept?(index) == true { return }
-        if index == Pad.stackKeyID {
+        // Configured text wins over every built-in role. That is what lets the
+        // wide key be traded for a macro, and what makes the stack and land
+        // keys useful on a machine with no GitButler to drive.
+        if let text = keyBindings.text(for: index) {
+            Task { await injectPrompt(text) }
+        } else if index == Pad.stackKeyID {
             onStackKey?()
         } else if index == Pad.tabCycleKeyID {
             Task { await cycleTabs() }
         } else if index == Pad.landKeyID {
             onLandKey?()
-        } else if Pad.macroKeyIDs.contains(index) || Pad.voiceKeyIDs.contains(index) {
-            // A configured text macro wins over the key's built-in role, which
-            // is how the config file may repurpose the wide voice key.
-            if let text = keyBindings.text(for: index) {
-                Task { await injectPrompt(text) }
-            } else if Pad.voiceKeyIDs.contains(index) {
-                onVoiceKey?()
-            }
+        } else if keyBindings.voiceKeys.contains(index) {
+            onVoiceKey?()
         } else if index == Pad.dialUpID || index == Pad.dialDownID {
             onDial?(index == Pad.dialUpID ? 1 : -1)
         } else if let direction = Pad.JoystickDirection(keyID: index) {
@@ -497,10 +501,27 @@ public final class BridgeController: ObservableObject {
     /// window order, so an agent key pressed from a browser used to move a
     /// cursor you could not see. The terminal comes forward with it.
     public func focusSlot(_ index: Int) async {
-        guard index >= 0, index < agents.count else { return }
-        guard let target = agents[index].focusTarget else { return }
+        // An empty slot used to swallow the press in silence, which reads as a
+        // dead key rather than an unused one - say so instead.
+        guard index >= 0, index < agents.count else {
+            lastError = agents.isEmpty
+                ? "No agents in Herdr right now."
+                : "Nothing on that key — Herdr has \(agents.count) agent\(agents.count == 1 ? "" : "s")."
+            return
+        }
+        guard let target = agents[index].focusTarget else {
+            lastError = "Herdr gave no pane for \(agents[index].shortName)."
+            return
+        }
         do {
-            try await HerdrClient.focusAgent(target)
+            // `pane.focus` is what actually moves the rendered view; a pane id
+            // is what it takes, so `agent.focus` only covers the fallback case
+            // where Herdr reported no pane and `target` is a terminal id.
+            if let pane = agents[index].paneID {
+                try await HerdrClient.focusPane(pane)
+            } else {
+                try await HerdrClient.focusAgent(target)
+            }
             raiseTerminal()
         } catch {
             lastError = error.localizedDescription
