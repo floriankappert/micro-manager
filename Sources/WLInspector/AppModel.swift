@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.hid
 import SwiftUI
 import WLKit
 
@@ -121,6 +122,12 @@ final class AppModel: ObservableObject {
     // MARK: - Connection
 
     func connect() {
+        // The Inspector is its own bundle, so it needs its own Input Monitoring
+        // grant. Ask for it: a bare open just fails with 0xE00002E2 and never
+        // raises the system prompt.
+        if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        }
         do {
             try device.connect()
             connected = true

@@ -43,7 +43,7 @@ public final class WLDevice {
     public enum Failure: LocalizedError {
         case notFound
         case noVendorCollection
-        case openFailed(IOReturn)
+        case openFailed(IOReturn, String)
         case notConnected
         case writeFailed(IOReturn)
         case timeout(String)
@@ -55,11 +55,17 @@ public final class WLDevice {
                 return "No Work Louder device on the HID bus. If it is a Bluetooth pad it may have gone to sleep — press a key to wake it."
             case .noVendorCollection:
                 return "Found the device, but not its vendor collection (usage page 0xFF00). Nothing to talk to."
-            case .openFailed(let r):
-                if r == kIOReturnNotPrivileged || UInt32(bitPattern: r) == 0xE00002C1 {
-                    return "Open refused (0xE00002C1). Grant Input Monitoring to the process running this app, under System Settings → Privacy & Security → Input Monitoring."
+            case .openFailed(let r, let detail):
+                // Two codes mean "no Input Monitoring grant": NotPrivileged
+                // (0xE00002C1) on older systems, NotPermitted (0xE00002E2) on
+                // macOS 26. Both read like bugs unless named.
+                let code = UInt32(bitPattern: r)
+                if r == kIOReturnNotPrivileged || r == kIOReturnNotPermitted
+                    || code == 0xE00002C1 || code == 0xE00002E2 {
+                    return String(format: "Open refused (0x%08X). ", code)
+                        + "Grant Input Monitoring to the process running this app, under System Settings → Privacy & Security → Input Monitoring. [\(detail)]"
                 }
-                return String(format: "IOHIDDeviceOpen failed (0x%08X)", UInt32(bitPattern: r))
+                return String(format: "IOHIDDeviceOpen failed (0x%08X) [%@]", UInt32(bitPattern: r), detail)
             case .notConnected:
                 return "Not connected."
             case .writeFailed(let r):
@@ -161,7 +167,23 @@ public final class WLDevice {
         }
 
         let result = IOHIDDeviceOpen(dev, IOOptionBits(kIOHIDOptionsTypeNone))
-        guard result == kIOReturnSuccess else { throw Failure.openFailed(result) }
+        guard result == kIOReturnSuccess else {
+            // Say what was being opened and what TCC thinks, so a refusal can
+            // be told apart from a permission that is simply missing.
+            let access: String
+            switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+            case kIOHIDAccessTypeGranted: access = "granted"
+            case kIOHIDAccessTypeDenied: access = "denied"
+            default: access = "not asked"
+            }
+            let matched = set.map { d -> String in
+                let page = primaryUsagePage(d).map { String(format: "0x%04X", $0) } ?? "?"
+                return "\(string(d, kIOHIDTransportKey) ?? "?")/\(page)"
+            }.joined(separator: ", ")
+            let chosen = String(format: "0x%04X", primaryUsagePage(dev) ?? 0)
+            throw Failure.openFailed(result,
+                "Input Monitoring \(access); opened \(string(dev, kIOHIDTransportKey) ?? "?") device with primary usage page \(chosen); matched: \(matched)")
+        }
 
         device = dev
         info = Info(
