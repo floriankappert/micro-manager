@@ -205,6 +205,17 @@ public enum HerdrClient {
         _ = try await request("agent.focus", params: ["target": target])
     }
 
+    /// Moves the *rendered* view to a pane.
+    ///
+    /// `agent.focus` is not enough on its own: it updates the server's focus
+    /// state and emits `workspace.focused` / `tab.focused`, and the server logs
+    /// every call as ok - but the attached client does not redraw, so the
+    /// screen stays where it was (seen on Herdr 0.9.0). `pane.focus` moves the
+    /// view. Prefer it wherever a pane id is known.
+    public static func focusPane(_ paneID: String) async throws {
+        _ = try await request("pane.focus", params: ["pane_id": paneID])
+    }
+
     public static func listTabs(workspaceID: String? = nil) async throws -> [HerdrTab] {
         var params: [String: Any] = [:]
         if let workspaceID { params["workspace_id"] = workspaceID }
@@ -235,6 +246,20 @@ public enum HerdrClient {
     public static func cycleTabs() async throws {
         guard let next = nextTab(in: try await listTabs()) else { return }
         try await focusTab(next.tabID)
+        // `tab.focus` moves the server's focus without redrawing the client,
+        // exactly as `agent.focus` does - see `focusPane`. Landing on a pane
+        // of the new tab is what puts it on screen. Best effort: a tab with no
+        // pane is still focused, just not shown.
+        if let pane = try? await firstPane(inTab: next.tabID) {
+            try? await focusPane(pane)
+        }
+    }
+
+    /// Any pane belonging to a tab, for turning a tab focus into a visible one.
+    static func firstPane(inTab tabID: String) async throws -> String? {
+        let result = try await request("pane.list")
+        let panes = result["panes"] as? [[String: Any]] ?? []
+        return panes.first { $0["tab_id"] as? String == tabID }?["pane_id"] as? String
     }
 
     /// The tab `cycleTabs` would focus, or nil when there is nothing to do —
