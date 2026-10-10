@@ -114,11 +114,13 @@ public enum KeymapManager {
     /// where at least one Bluetooth pad sits - ignores everything written to
     /// the first: no key reports, no per-key colours, and every write still
     /// answers ok. Unreadable status means layer 1, as before.
-    public static func activeLayer(_ device: WLDevice) async -> Int {
+    /// nil when the pad did not answer, which is not the same as layer 1:
+    /// guessing here is what parks the keycodes on a layer nobody is on.
+    public static func activeLayer(_ device: WLDevice) async -> Int? {
         guard let status = try? await device.callAsync("device.status"),
               let dict = status as? [String: Any],
               let index = dict["layer_index"] as? Int
-        else { return 0 }
+        else { return nil }
         return max(0, index - 1)
     }
 
@@ -255,7 +257,16 @@ public enum KeymapManager {
     /// change something.
     @discardableResult
     public static func apply(_ device: WLDevice) async throws -> Bool {
-        let layer = await activeLayer(device)
+        guard let layer = await activeLayer(device) else {
+            throw Failure.unreadable("device.status reported no layer_index")
+        }
+        return try await apply(device, layer: layer)
+    }
+
+    /// Rebinds a known layer, for callers that already asked the pad which one
+    /// it is on and would otherwise ask twice.
+    @discardableResult
+    public static func apply(_ device: WLDevice, layer: Int) async throws -> Bool {
         let config = try await read(device)
         if isAgentKeymapApplied(config, layer: layer) { return false }
 

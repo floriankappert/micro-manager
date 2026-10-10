@@ -1,6 +1,7 @@
 import Foundation
 import IOKit
 import IOKit.hid
+import os
 
 /// Raw-HID JSON-RPC transport for Work Louder devices.
 ///
@@ -108,8 +109,15 @@ public final class WLDevice {
     private var manager: IOHIDManager?
     private var device: IOHIDDevice?
     private var inputBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: reportSize)
-    private var rpcAccumulator = ""
+    private var framer = RPCFramer()
     private var debugAccumulator = ""
+    /// Calls that timed out since the pad last sent anything at all. A pad
+    /// that stays silent through several is gone, whatever IOKit says: over
+    /// Bluetooth the handle can outlive the link without a removal callback,
+    /// and the bridge would otherwise sit "connected" to nothing.
+    private var silentTimeouts = 0
+    public static let maxSilentTimeouts = 3
+    static let log = Logger(subsystem: "cc.worklouder.wlkit", category: "device")
     private var pending: [Int: (Any?, String?) -> Void] = [:]
     private var nextID = 1
 
@@ -210,6 +218,7 @@ public final class WLDevice {
         }, context)
 
         IOHIDDeviceScheduleWithRunLoop(dev, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        WLDevice.log.notice("connected: \(self.info?.product ?? "?", privacy: .public) over \(self.info?.transport ?? "?", privacy: .public)")
     }
 
     public func disconnect(reason: String?) {
@@ -232,10 +241,15 @@ public final class WLDevice {
             manager = nil
         }
         info = nil
-        rpcAccumulator = ""
+        if framer.resyncs > 0 {
+            WLDevice.log.notice("framer dropped \(self.framer.resyncs) partial message(s) this session")
+        }
+        framer = RPCFramer()
         debugAccumulator = ""
+        silentTimeouts = 0
         for (_, done) in pending { done(nil, "disconnected") }
         pending.removeAll()
+        WLDevice.log.notice("disconnected: \(reason ?? "on request", privacy: .public)")
         if let reason { onDisconnect?(reason) }
     }
 
@@ -296,8 +310,19 @@ public final class WLDevice {
                 // Surface the failure rather than dropping it: a silent write
                 // error is indistinguishable from a device that ignores you.
                 let message = Failure.writeFailed(rc).errorDescription ?? "write failed"
+                WLDevice.log.error("write failed for \(method, privacy: .public): \(message, privacy: .public)")
                 onWriteError?(method, message)
                 completion?(nil, message)
+                // These mean the handle is dead. Left alone, every later call
+                // fails the same way while the bridge still reads connected,
+                // so drop it and let the owner reopen. Deferred, so nothing is
+                // torn down under the caller still unwinding from this call.
+                if WLDevice.deadHandleCodes.contains(UInt32(bitPattern: rc)) {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.device === dev else { return }
+                        self.disconnect(reason: message)
+                    }
+                }
                 return nil
             }
             offset += n
@@ -310,14 +335,29 @@ public final class WLDevice {
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
                 guard let self, let waiting = self.pending.removeValue(forKey: id) else { return }
                 waiting(nil, Failure.timeout(method).errorDescription)
+                self.noteTimeout(method, handle: dev)
             }
         }
         return id
     }
 
+    /// kIOReturnNotOpen, kIOReturnNoDevice, kIOReturnNotAttached, kIOReturnAborted.
+    static let deadHandleCodes: Set<UInt32> = [0xE00002CD, 0xE00002C0, 0xE00002D9, 0xE00002EB]
+
+    private func noteTimeout(_ method: String, handle: IOHIDDevice) {
+        // A timeout that lands after a reconnect belongs to the old handle.
+        guard device === handle else { return }
+        silentTimeouts += 1
+        WLDevice.log.notice("\(method, privacy: .public) timed out (\(self.silentTimeouts) in a row with no traffic)")
+        guard silentTimeouts >= WLDevice.maxSilentTimeouts else { return }
+        disconnect(reason: "the pad stopped answering (\(silentTimeouts) calls timed out)")
+    }
+
     // MARK: - Receive
 
     private func handleReport(_ bytes: [UInt8], reportID: UInt32) {
+        // Any report at all - a key, a log line, a reply - proves the link.
+        silentTimeouts = 0
         onRawReport?(reportID, bytes)
         // The input callback delivers the report id out-of-band, so the
         // payload normally starts at index 0 — but be tolerant of stacks that
@@ -333,9 +373,9 @@ public final class WLDevice {
         guard length > 0, length <= WLDevice.maxChunk, bytes.count >= offset + 2 + length else { return false }
 
         let slice = Array(bytes[(offset + 2)..<(offset + 2 + length)])
-        guard let text = String(bytes: slice, encoding: .utf8) else { return false }
 
         if channel == WLDevice.channelDebug {
+            guard let text = String(bytes: slice, encoding: .utf8) else { return false }
             debugAccumulator += text
             while let idx = debugAccumulator.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
                 let line = String(debugAccumulator[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,67 +386,31 @@ public final class WLDevice {
             return true
         }
 
-        rpcAccumulator += text
-        drainRPC()
-        if rpcAccumulator.count > 8192 { rpcAccumulator = "" }
+        let resyncs = framer.resyncs
+        let messages = framer.feed(slice, at: ProcessInfo.processInfo.systemUptime)
+        if framer.resyncs > resyncs {
+            WLDevice.log.notice("dropped a partial message: a fragment went missing")
+        }
+        messages.forEach(dispatch)
         return true
     }
 
-    /// Pulls complete top-level JSON objects out of the accumulator.
-    private func drainRPC() {
-        while let object = nextJSONObject() {
-            guard
-                let data = object.data(using: .utf8),
-                let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { continue }
+    private func dispatch(_ message: Data) {
+        guard let decoded = try? JSONSerialization.jsonObject(with: message) as? [String: Any]
+        else { return }
 
-            if let id = decoded["id"] as? Int {
-                let error = (decoded["error"] as? [String: Any])?["message"] as? String
-                let result = decoded["result"]
-                onResponse?(id, result, error)
-                if let waiting = pending.removeValue(forKey: id) { waiting(result, error) }
-            } else if let method = (decoded["m"] as? String) ?? (decoded["method"] as? String) {
-                // Device-pushed notification. Note the envelope is abbreviated
-                // here - {"m": method, "p": params} - while responses use the
-                // full "method". Matching only on "method" drops every one.
-                let params = decoded["m"] != nil ? decoded["p"] : decoded["params"]
-                onNotification?(method, params)
-            }
+        if let id = decoded["id"] as? Int {
+            let error = (decoded["error"] as? [String: Any])?["message"] as? String
+            let result = decoded["result"]
+            onResponse?(id, result, error)
+            if let waiting = pending.removeValue(forKey: id) { waiting(result, error) }
+        } else if let method = (decoded["m"] as? String) ?? (decoded["method"] as? String) {
+            // Device-pushed notification. Note the envelope is abbreviated
+            // here - {"m": method, "p": params} - while responses use the
+            // full "method". Matching only on "method" drops every one.
+            let params = decoded["m"] != nil ? decoded["p"] : decoded["params"]
+            onNotification?(method, params)
         }
-    }
-
-    private func nextJSONObject() -> String? {
-        var depth = 0
-        var start: String.Index?
-        var inString = false
-        var escaped = false
-        var index = rpcAccumulator.startIndex
-
-        while index < rpcAccumulator.endIndex {
-            let ch = rpcAccumulator[index]
-            if inString {
-                if escaped { escaped = false }
-                else if ch == "\\" { escaped = true }
-                else if ch == "\"" { inString = false }
-            } else if ch == "\"" {
-                inString = true
-            } else if ch == "{" {
-                if depth == 0 { start = index }
-                depth += 1
-            } else if ch == "}" {
-                if depth > 0 {
-                    depth -= 1
-                    if depth == 0, let s = start {
-                        let end = rpcAccumulator.index(after: index)
-                        let object = String(rpcAccumulator[s..<end])
-                        rpcAccumulator = String(rpcAccumulator[end...])
-                        return object
-                    }
-                }
-            }
-            index = rpcAccumulator.index(after: index)
-        }
-        return nil
     }
 
     // MARK: - Properties

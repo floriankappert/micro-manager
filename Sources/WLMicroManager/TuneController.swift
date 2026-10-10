@@ -58,7 +58,8 @@ final class TuneController {
             } else if kind.contains("codex") {
                 try await HerdrClient.sendKeys(
                     paneID: pane,
-                    keys: [step > 0 ? Self.codexEffortUpChord : Self.codexEffortDownChord]
+                    keys: [step > 0 ? Self.codexEffortUpChord : Self.codexEffortDownChord],
+                    on: host
                 )
             } else {
                 onError?("No effort control for \(agent.agent).")
@@ -143,17 +144,17 @@ final class TuneController {
 
         switch direction {
         case .north:
-            try await HerdrClient.sendKeys(paneID: pane, keys: ["up"])
+            try await HerdrClient.sendKeys(paneID: pane, keys: ["up"], on: host)
             showCodexModels(agent: agent)
         case .south:
-            try await HerdrClient.sendKeys(paneID: pane, keys: ["down"])
+            try await HerdrClient.sendKeys(paneID: pane, keys: ["down"], on: host)
             showCodexModels(agent: agent)
         case .east:
-            try await HerdrClient.sendKeys(paneID: pane, keys: ["enter"])
+            try await HerdrClient.sendKeys(paneID: pane, keys: ["enter"], on: host)
             codexPickerPane = nil
             TunePanelController.shared.hide()
         case .west:
-            try await HerdrClient.sendKeys(paneID: pane, keys: ["esc"])
+            try await HerdrClient.sendKeys(paneID: pane, keys: ["esc"], on: host)
             codexPickerPane = nil
             TunePanelController.shared.hide()
         }
@@ -174,17 +175,22 @@ final class TuneController {
 
     // MARK: - Plumbing
 
+    /// The server the focused pane lives on. Every dial and joystick gesture
+    /// starts by looking up the focused pane, so this is always that pane's.
+    private var host: HerdrHost = .local
+
     private func focusedPane() async -> (HerdrAgent, String)? {
         guard let agent = try? await HerdrClient.focusedAgent(), let pane = agent.paneID else {
             onError?("Nothing has focus in Herdr right now.")
             return nil
         }
+        host = agent.host
         return (agent, pane)
     }
 
     /// Slash commands go in as text plus enter: typed, then submitted.
     private func send(command: String, to pane: String) async throws {
-        try await HerdrClient.sendText(paneID: pane, text: command)
-        try await HerdrClient.sendKeys(paneID: pane, keys: ["enter"])
+        try await HerdrClient.sendText(paneID: pane, text: command, on: host)
+        try await HerdrClient.sendKeys(paneID: pane, keys: ["enter"], on: host)
     }
 }

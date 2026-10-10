@@ -8,7 +8,59 @@ import Foundation
 /// connection, and each subscription owns a dedicated long-lived one. A client
 /// that reuses a connection for a second request simply never hears back.
 
+/// A Herdr server to talk to: the one on this Mac, or one on another machine
+/// reached through an SSH tunnel (see `HerdrTunnel`). The protocol is the same
+/// either way; only the socket differs.
+public struct HerdrHost: Hashable, Sendable {
+    /// Nil for this Mac; otherwise the name the config gives the remote.
+    public var name: String?
+    public var socketPath: String
+
+    public init(name: String?, socketPath: String) {
+        self.name = name
+        self.socketPath = socketPath
+    }
+
+    public static var local: HerdrHost { HerdrHost(name: nil, socketPath: HerdrClient.socketPath()) }
+    public var isLocal: Bool { name == nil }
+}
+
+/// Which Herdr servers the app knows, and which one the person is working in.
+///
+/// Every server has its own focused agent, so "the focused agent" - what the
+/// dial tunes, what a macro types into - needs a host to ask. That is the one
+/// the pad last jumped to, starting on this Mac.
+public final class HerdrHosts: @unchecked Sendable {
+    public static let shared = HerdrHosts()
+
+    private let lock = NSLock()
+    private var _remotes: [HerdrHost] = []
+    private var _active: HerdrHost?
+
+    /// This Mac first, then the remotes in config order - the order agents
+    /// fill the keys in.
+    public var all: [HerdrHost] { [.local] + remotes }
+
+    public var remotes: [HerdrHost] {
+        get { lock.lock(); defer { lock.unlock() }; return _remotes }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            _remotes = newValue
+            if let active = _active, !newValue.contains(active) { _active = nil }
+        }
+    }
+
+    public var active: HerdrHost {
+        get { lock.lock(); defer { lock.unlock() }; return _active ?? .local }
+        set { lock.lock(); defer { lock.unlock() }; _active = newValue.isLocal ? nil : newValue }
+    }
+}
+
 public struct HerdrAgent: Equatable, Sendable {
+    /// The server this agent runs under. Pane and tab ids are only unique
+    /// within one server - two machines both have a "w1:p1" - so anything
+    /// keyed by them has to carry this too.
+    public var host: HerdrHost = .local
     public var terminalID: String?
     public var paneID: String?
     public var tabID: String?
@@ -33,6 +85,11 @@ public struct HerdrAgent: Equatable, Sendable {
         [foregroundCwd, cwd].compactMap { $0 }.first { !$0.isEmpty }
     }
 
+    /// Identifies the pane across every server.
+    public var paneKey: String? {
+        paneID.map { "\(host.name ?? "")|\($0)" }
+    }
+
     /// Last path component of the working directory, which is what a person
     /// recognises the agent by.
     public var shortName: String {
@@ -40,7 +97,8 @@ public struct HerdrAgent: Equatable, Sendable {
         return (directory as NSString).lastPathComponent
     }
 
-    init(json: [String: Any]) {
+    init(json: [String: Any], host: HerdrHost = .local) {
+        self.host = host
         terminalID = json["terminal_id"] as? String
         paneID = json["pane_id"] as? String
         tabID = json["tab_id"] as? String
@@ -62,8 +120,10 @@ public struct HerdrAgent: Equatable, Sendable {
         terminalID: String? = nil,
         cwd: String? = nil,
         foregroundCwd: String? = nil,
-        focused: Bool = false
+        focused: Bool = false,
+        host: HerdrHost = .local
     ) {
+        self.host = host
         self.agent = agent
         self.status = status
         self.paneID = paneID
@@ -134,10 +194,11 @@ public enum HerdrClient {
     public static func request(
         _ method: String,
         params: [String: Any] = [:],
+        on host: HerdrHost = .local,
         timeout: TimeInterval = 5
     ) async throws -> [String: Any] {
         try await withCheckedThrowingContinuation { continuation in
-            let conn = SocketConnection(path: socketPath())
+            let conn = SocketConnection(path: host.socketPath)
             var finished = false
             let finish: (Result<[String: Any], Error>) -> Void = { result in
                 guard !finished else { return }
@@ -188,21 +249,60 @@ public enum HerdrClient {
     /// Slot N is element N, so the pad reads like the sidebar. Do not re-sort:
     /// an earlier version ordered by ID strings here, and IDs do not sort the
     /// way the sidebar displays.
-    public static func listAgents() async throws -> [HerdrAgent] {
-        let result = try await request("agent.list")
+    public static func listAgents(on host: HerdrHost = .local, timeout: TimeInterval = 5) async throws -> [HerdrAgent] {
+        let result = try await request("agent.list", on: host, timeout: timeout)
         let raw = result["agents"] as? [[String: Any]] ?? []
-        return raw.map(HerdrAgent.init(json:))
+        return raw.map { HerdrAgent(json: $0, host: host) }
+    }
+
+    /// Every server's agents, this Mac's first, each server in its own order.
+    ///
+    /// A remote that cannot be reached is left out and reported, not thrown:
+    /// a sleeping laptop across the room must not blank the keys of the agents
+    /// on this one. Only a failure of this Mac's own server throws, and only
+    /// when no remote answered either.
+    public static func listAllAgents(
+        hosts: [HerdrHost] = HerdrHosts.shared.all
+    ) async throws -> (agents: [HerdrAgent], failures: [HerdrHost: Error]) {
+        let results = await withTaskGroup(of: (Int, Result<[HerdrAgent], Error>).self) { group in
+            for (index, host) in hosts.enumerated() {
+                group.addTask {
+                    // A remote gets less patience: a stalled tunnel would
+                    // otherwise hold up the lights for the local agents.
+                    do { return (index, .success(try await listAgents(on: host, timeout: host.isLocal ? 5 : 3))) }
+                    catch { return (index, .failure(error)) }
+                }
+            }
+            var collected: [(Int, Result<[HerdrAgent], Error>)] = []
+            for await item in group { collected.append(item) }
+            return collected.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+        var agents: [HerdrAgent] = []
+        var failures: [HerdrHost: Error] = [:]
+        for (host, result) in zip(hosts, results) {
+            switch result {
+            case .success(let list): agents += list
+            case .failure(let error): failures[host] = error
+            }
+        }
+        if let error = failures[.local] ?? failures.values.first, failures.count == hosts.count {
+            throw error
+        }
+        return (agents, failures)
     }
 
     /// The agent whose pane has focus in Herdr, if any. Fetched fresh rather
     /// than read off the bridge's poll, since focus is exactly the thing that
     /// changes between polls.
+    ///
+    /// With remotes configured, every server has a focused agent of its own;
+    /// this asks the one the pad last jumped to (`HerdrHosts.active`).
     public static func focusedAgent() async throws -> HerdrAgent? {
-        try await listAgents().first(where: \.focused)
+        try await listAgents(on: HerdrHosts.shared.active).first(where: \.focused)
     }
 
-    public static func focusAgent(_ target: String) async throws {
-        _ = try await request("agent.focus", params: ["target": target])
+    public static func focusAgent(_ target: String, on host: HerdrHost = .local) async throws {
+        _ = try await request("agent.focus", params: ["target": target], on: host)
     }
 
     /// Moves the *rendered* view to a pane.
@@ -212,52 +312,52 @@ public enum HerdrClient {
     /// every call as ok - but the attached client does not redraw, so the
     /// screen stays where it was (seen on Herdr 0.9.0). `pane.focus` moves the
     /// view. Prefer it wherever a pane id is known.
-    public static func focusPane(_ paneID: String) async throws {
-        _ = try await request("pane.focus", params: ["pane_id": paneID])
+    public static func focusPane(_ paneID: String, on host: HerdrHost = .local) async throws {
+        _ = try await request("pane.focus", params: ["pane_id": paneID], on: host)
     }
 
-    public static func listTabs(workspaceID: String? = nil) async throws -> [HerdrTab] {
+    public static func listTabs(workspaceID: String? = nil, on host: HerdrHost = .local) async throws -> [HerdrTab] {
         var params: [String: Any] = [:]
         if let workspaceID { params["workspace_id"] = workspaceID }
-        let result = try await request("tab.list", params: params)
+        let result = try await request("tab.list", params: params, on: host)
         let raw = result["tabs"] as? [[String: Any]] ?? []
         return raw.map(HerdrTab.init(json:))
     }
 
-    public static func focusTab(_ tabID: String) async throws {
-        _ = try await request("tab.focus", params: ["tab_id": tabID])
+    public static func focusTab(_ tabID: String, on host: HerdrHost = .local) async throws {
+        _ = try await request("tab.focus", params: ["tab_id": tabID], on: host)
     }
 
     /// Injects key chords into a pane, crossterm-style names ("ctrl+alt+v",
     /// "f13", "enter"). The pane's terminal encodes them as if typed.
-    public static func sendKeys(paneID: String, keys: [String]) async throws {
-        _ = try await request("pane.send_keys", params: ["pane_id": paneID, "keys": keys])
+    public static func sendKeys(paneID: String, keys: [String], on host: HerdrHost = .local) async throws {
+        _ = try await request("pane.send_keys", params: ["pane_id": paneID, "keys": keys], on: host)
     }
 
     /// Types a string into a pane — bracketed-pasted when the pane supports
     /// it, so multi-word text lands as one block and nothing auto-submits.
-    public static func sendText(paneID: String, text: String) async throws {
-        _ = try await request("pane.send_text", params: ["pane_id": paneID, "text": text])
+    public static func sendText(paneID: String, text: String, on host: HerdrHost = .local) async throws {
+        _ = try await request("pane.send_text", params: ["pane_id": paneID, "text": text], on: host)
     }
 
     /// Focuses the tab after the focused one in its workspace, wrapping at the
     /// end. Tabs in other workspaces are left alone: cycling is a
     /// within-window gesture, not a window switcher.
-    public static func cycleTabs() async throws {
-        guard let next = nextTab(in: try await listTabs()) else { return }
-        try await focusTab(next.tabID)
+    public static func cycleTabs(on host: HerdrHost = HerdrHosts.shared.active) async throws {
+        guard let next = nextTab(in: try await listTabs(on: host)) else { return }
+        try await focusTab(next.tabID, on: host)
         // `tab.focus` moves the server's focus without redrawing the client,
         // exactly as `agent.focus` does - see `focusPane`. Landing on a pane
         // of the new tab is what puts it on screen. Best effort: a tab with no
         // pane is still focused, just not shown.
-        if let pane = try? await firstPane(inTab: next.tabID) {
-            try? await focusPane(pane)
+        if let pane = try? await firstPane(inTab: next.tabID, on: host) {
+            try? await focusPane(pane, on: host)
         }
     }
 
     /// Any pane belonging to a tab, for turning a tab focus into a visible one.
-    static func firstPane(inTab tabID: String) async throws -> String? {
-        let result = try await request("pane.list")
+    static func firstPane(inTab tabID: String, on host: HerdrHost = .local) async throws -> String? {
+        let result = try await request("pane.list", on: host)
         let panes = result["panes"] as? [[String: Any]] ?? []
         return panes.first { $0["tab_id"] as? String == tabID }?["pane_id"] as? String
     }
@@ -303,9 +403,9 @@ public final class HerdrEventStream {
     private var ready = false
     private var stopped = false
 
-    public init(subscriptions: [[String: Any]]) {
+    public init(subscriptions: [[String: Any]], on host: HerdrHost = .local) {
         self.subscriptions = subscriptions
-        self.conn = SocketConnection(path: HerdrClient.socketPath())
+        self.conn = SocketConnection(path: host.socketPath)
     }
 
     @discardableResult

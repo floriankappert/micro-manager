@@ -152,12 +152,19 @@ public enum Pad {
     /// when turning everything off, not just the visible keys.
     public static let maxThreadID = 19
     /// Agent slot N lights and answers to `agentKeyIDs[N]`, in READING order:
-    /// left to right, top to bottom as you look at the pad. The firmware's top
-    /// row is wired right to left — key 0 is the top-RIGHT key — so reading
-    /// order starts 1, 0. The other rows run left to right in index order.
+    /// left to right, top to bottom as you look at the pad.
+    ///
+    /// The top row is not wired the same way on every pad. Where key 0 is the
+    /// top-RIGHT cap, reading order has to start 1, 0, which is this default;
+    /// where it is the top-LEFT cap it is a plain 0, 1. The other rows run
+    /// left to right in index order on both. `KeyBindings.agentKeys` carries
+    /// the order actually in use — prefer it over this constant, which is only
+    /// the fallback.
     public static let agentKeyIDs = [1, 0, 2, 3, 4, 5]
-    /// The rows as you look at the pad, for on-screen mirrors. `rows` stays in
-    /// firmware order because the keymap file is addressed that way.
+    /// The rows as you look at the pad, for on-screen mirrors, with the same
+    /// caveat about the top row: `KeyBindings.displayRows` is the live one.
+    /// `rows` stays in firmware order because the keymap file is addressed
+    /// that way.
     public static let displayRows: [[Int]] = [
         [1, 0],
         [2, 3, 4, 5],
@@ -165,7 +172,8 @@ public enum Pad {
         [10, 11, 12],
     ]
 
-    /// The agent slot a key answers for, or nil for non-agent keys.
+    /// The agent slot a key answers for on a default pad, or nil for non-agent
+    /// keys. `KeyBindings.agentSlot(for:)` honours the configured order.
     public static func agentSlot(for key: Int) -> Int? {
         agentKeyIDs.firstIndex(of: key)
     }

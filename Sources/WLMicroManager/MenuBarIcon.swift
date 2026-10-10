@@ -46,11 +46,12 @@ enum MenuBarIcon {
         /// nil keeps the icon templated, so it matches the menu bar.
         var dot: NSColor? {
             switch self {
-            case .off, .idle: return nil
+            // All idle is white on the pad; in the menu bar that is simply
+            // the templated icon, which stays legible on light and dark.
+            case .off, .idle, .allIdle: return nil
             case .permissionDenied: return .systemRed
             case .deviceMissing: return .systemGray
-            case .allIdle: return NSColor(srgbRed: 0, green: 0.78, blue: 0.33, alpha: 1)
-            case .working: return NSColor(srgbRed: 1, green: 0.63, blue: 0, alpha: 1)
+            case .working: return NSColor(srgbRed: 1, green: 0.42, blue: 0, alpha: 1)
             case .blocked: return NSColor(srgbRed: 1, green: 0.18, blue: 0.18, alpha: 1)
             }
         }

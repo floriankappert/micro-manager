@@ -12,8 +12,8 @@ import AppKit
 /// press that has to work when you are mid-thought.
 ///
 /// Posting a key event needs the **Accessibility** grant, on top of the Input
-/// Monitoring grant the pad needs. The check below raises the system prompt the
-/// first time.
+/// Monitoring grant the pad needs. `KeystrokeController` asks for it and words
+/// the refusal.
 @MainActor
 final class VoiceController {
 
@@ -42,41 +42,10 @@ final class VoiceController {
         }
     }
 
+    /// The tap itself, the Accessibility check and the error wording all live
+    /// in `KeystrokeController` — it posts every other synthetic key this app
+    /// sends, and a modifier is only a key with its flag set.
     private func tapTriggerKey() throws {
-        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        guard AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary) else {
-            throw VoiceFailure.accessibilityDenied
-        }
-
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard
-            let down = CGEvent(keyboardEventSource: source,
-                               virtualKey: Self.triggerKey, keyDown: true),
-            let up = CGEvent(keyboardEventSource: source,
-                             virtualKey: Self.triggerKey, keyDown: false)
-        else { throw VoiceFailure.eventFailed }
-
-        // A modifier carries its own flag: set on the way down, cleared on the
-        // way up. Skip that and listeners see a command key that never
-        // releases, which leaves the whole machine holding a modifier down.
-        down.flags = .maskCommand
-        up.flags = []
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-    }
-
-    enum VoiceFailure: LocalizedError {
-        case accessibilityDenied
-        case eventFailed
-
-        var errorDescription: String? {
-            switch self {
-            case .accessibilityDenied:
-                return "Pressing right command needs the Accessibility permission: "
-                    + "System Settings → Privacy & Security → Accessibility → Micro Manager."
-            case .eventFailed:
-                return "Could not synthesise the right command key press."
-            }
-        }
+        try KeystrokeController.shared.tap(Self.triggerKey, flags: .maskCommand)
     }
 }

@@ -47,6 +47,9 @@ final class EmulatorWindowController: NSObject, NSWindowDelegate {
 
 struct EmulatorView: View {
     @ObservedObject var emulator: PadEmulator
+    /// Read once when the window opens: the emulator has no bridge to ask, and
+    /// the drawn pad still has to match the real one's key order.
+    let bindings = KeyBindings.load()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -75,7 +78,7 @@ struct EmulatorView: View {
 
             VStack(spacing: Self.gap) {
                 // Rows 0–2 are plain grids of single keys.
-                ForEach(Array(Pad.displayRows.prefix(3).enumerated()), id: \.offset) { _, row in
+                ForEach(Array(bindings.displayRows.prefix(3).enumerated()), id: \.offset) { _, row in
                     HStack(spacing: Self.gap) {
                         ForEach(row, id: \.self) { key in keyButton(key) }
                     }

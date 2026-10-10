@@ -28,16 +28,22 @@ final class StatusMapperTests: XCTestCase {
     func testWorkingOutranksIdleAndDone() {
         let state = StatusMapper.aggregate([agent("done"), agent("idle"), agent("working")])
         XCTAssertEqual(state, "working")
-        XCTAssertEqual(StatusMapper.zone(for: state)?.color, 0xFFA000)
+        XCTAssertEqual(StatusMapper.zone(for: state)?.color, 0xFF6A00)
     }
 
     func testUnrecognisedStatusStillYieldsAState() {
         XCTAssertEqual(StatusMapper.aggregate([agent("wat")]), "unknown")
     }
 
-    func testBlockedBreathesSoItReadsDifferently() {
+    func testBlockedAndWorkingBreatheAtDifferentPaces() {
         XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .breath)
+        XCTAssertEqual(StatusMapper.threads(for: [agent("working")])[0].effect, .breath)
+    }
+
+    func testUnderglowStaysSteadyWhileWorking() {
         XCTAssertEqual(StatusMapper.zone(for: "working")?.effect, .solid)
+        XCTAssertEqual(StatusMapper.zone(for: "working")?.color, 0xFF6A00)
+        XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .breath)
     }
 
     // MARK: - Per-key
@@ -50,9 +56,9 @@ final class StatusMapperTests: XCTestCase {
         // The pad's top row is wired right to left, so reading order starts
         // at key 1: the first agent lights the top-LEFT key.
         XCTAssertEqual(threads.map(\.id), [1, 0, 2, 3, 4, 5], "keys in reading order")
-        XCTAssertEqual(threads[0].color, 0xFFA000)
+        XCTAssertEqual(threads[0].color, 0xFF6A00)
         XCTAssertEqual(threads[1].color, 0xFF2D2D)
-        XCTAssertEqual(threads[2].color, 0x00C853)
+        XCTAssertEqual(threads[2].effect, .off, "idle is dark")
     }
 
     func testKeysWithNoAgentAreSwitchedOffNotLeftStale() {
@@ -64,10 +70,11 @@ final class StatusMapperTests: XCTestCase {
         }
     }
 
-    func testBlockedAgentBreathesOnItsOwnKey() {
-        let threads = StatusMapper.threads(for: [agent("idle"), agent("blocked")])
-        XCTAssertEqual(threads[0].effect, .solid)
+    func testBlockedAgentBreathesFasterOnItsOwnKey() {
+        let threads = StatusMapper.threads(for: [agent("working"), agent("blocked")])
+        XCTAssertEqual(threads[0].effect, .breath)
         XCTAssertEqual(threads[1].effect, .breath)
+        XCTAssertGreaterThan(threads[1].speed ?? 0, threads[0].speed ?? 0)
     }
 
     func testMoreAgentsThanKeysDoesNotOverflow() {
@@ -75,13 +82,13 @@ final class StatusMapperTests: XCTestCase {
         XCTAssertEqual(StatusMapper.threads(for: many).count, 6)
     }
 
-    func testConfigOverridesAreHonoured() {
+    func testConfigOverridesAreHonoured() throws {
         var cfg = BridgeConfig()
         cfg.colors["working"] = 0x123456
         cfg.brightness = 0.3
         let thread = StatusMapper.threads(for: [agent("working")], cfg)[0]
         XCTAssertEqual(thread.color, 0x123456)
-        XCTAssertEqual(thread.brightness, 0.3)
+        XCTAssertEqual(try XCTUnwrap(thread.brightness), 0.3 * 0.8, accuracy: 1e-9)
     }
 
     // MARK: - Wire encoding
@@ -134,23 +141,21 @@ final class StatusMapperTests: XCTestCase {
 
 extension StatusMapperTests {
 
-    func testDoneAndIdleAreToldApartByColour() {
+    func testDoneIsLitAndIdleIsDark() {
         // "done" means finished and not yet looked at; "idle" means finished
-        // and seen. Different signals, so they must not share a colour.
+        // and seen. Different signals: one is lit, the other is dark.
         let cfg = BridgeConfig()
-        XCTAssertNotEqual(
-            cfg.color(for: "done"),
-            cfg.color(for: "idle"),
-            "a finished-but-unread agent must be distinguishable from a quiet one"
-        )
-        XCTAssertEqual(cfg.color(for: "idle"), 0x00C853)
-        XCTAssertEqual(cfg.color(for: "done"), 0x00B0FF)
+        XCTAssertEqual(cfg.color(for: "done"), 0x00C853)
+        XCTAssertEqual(cfg.effect(for: "done"), .breath)
+        XCTAssertEqual(cfg.effect(for: "idle"), .off)
+        XCTAssertEqual(cfg.brightness(for: "idle"), 0)
+        XCTAssertNil(StatusMapper.zone(for: "idle"))
     }
 
-    func testAttentionStatesAllHaveDistinctColours() {
+    func testLitStatesAllHaveDistinctColours() {
         let cfg = BridgeConfig()
         var seen: [Int: String] = [:]
-        for state in ["blocked", "working", "done", "idle"] {
+        for state in ["blocked", "working", "done"] {
             let color = cfg.color(for: state)
             XCTAssertNil(seen[color], "\(state) reuses the colour of \(seen[color] ?? "")")
             seen[color] = state
@@ -162,19 +167,76 @@ extension StatusMapperTests {
             HerdrAgent(status: "done", paneID: "w1:p1"),
             HerdrAgent(status: "idle", paneID: "w1:p2"),
         ])
-        XCTAssertEqual(threads[0].color, 0x00B0FF)
-        XCTAssertEqual(threads[1].color, 0x00C853)
+        XCTAssertEqual(threads[0].color, 0x00C853)
+        XCTAssertEqual(threads[0].effect, .breath)
+        XCTAssertEqual(threads[1].effect, .off)
+        XCTAssertEqual(threads[1].brightness, 0)
     }
 
-    /// Pins every status colour. These are the whole point of the pad — a
-    /// silent change to one is a bug you find by looking at hardware, which is
-    /// the slowest possible way to find it.
+    /// Pins every lit status colour. A silent change to one is a bug you find
+    /// by looking at hardware, the slowest possible way to find it.
     func testEveryStatusColourIsPinned() {
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "blocked"), 0xFF2D2D)
-        XCTAssertEqual(cfg.color(for: "working"), 0xFFA000)
-        XCTAssertEqual(cfg.color(for: "done"), 0x00B0FF)
-        XCTAssertEqual(cfg.color(for: "idle"), 0x00C853)
-        XCTAssertEqual(cfg.color(for: "unknown"), 0x00C853)
+        XCTAssertEqual(cfg.color(for: "working"), 0xFF6A00)
+        XCTAssertEqual(cfg.color(for: "done"), 0x00C853)
+    }
+
+    func testUnknownIsDarkAndLeavesTheUnderglowOff() {
+        let threads = StatusMapper.threads(for: [agent("wat")])
+        XCTAssertEqual(threads[0].effect, .off)
+        XCTAssertEqual(threads[0].brightness, 0)
+        XCTAssertNil(StatusMapper.zone(for: "unknown"))
+    }
+
+    func testCalmIsDarkAndAttentionBreathes() {
+        let cfg = BridgeConfig()
+        XCTAssertLessThan(cfg.brightness(for: "working"), cfg.brightness(for: "blocked"))
+        XCTAssertEqual(cfg.effect(for: "blocked"), .breath)
+        XCTAssertEqual(cfg.effect(for: "done"), .breath)
+        XCTAssertLessThan(cfg.speed(for: "done"), cfg.speed(for: "blocked"))
+    }
+}
+
+extension StatusMapperTests {
+
+    func testVoiceKeyIsAlwaysRedAndBreathesOnlyWhileListening() {
+        let rest = StatusMapper.voiceThread(id: 12, active: false)
+        let listening = StatusMapper.voiceThread(id: 12, active: true)
+        XCTAssertEqual(rest.color, 0xFF3B30)
+        XCTAssertEqual(rest.effect, .solid)
+        XCTAssertEqual(rest.brightness, BridgeConfig().brightness)
+        XCTAssertEqual(listening.color, 0xFF3B30)
+        XCTAssertEqual(listening.effect, .breath)
+    }
+
+    func testReturnKeyIsSteadyBlueAndOtherActionsStayQuiet() {
+        let enter = StatusMapper.actionThread(id: 10, action: .enter)
+        XCTAssertEqual(enter.color, 0x00B0FF)
+        XCTAssertEqual(enter.effect, .solid)
+        XCTAssertEqual(enter.brightness, BridgeConfig().brightness)
+        let back = StatusMapper.actionThread(id: 9, action: .backspace)
+        XCTAssertEqual(back.color, BridgeConfig().macroColor)
+    }
+}
+
+extension StatusMapperTests {
+
+    private func date(hour: Int) -> Date {
+        Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 10, hour: hour))!
+    }
+
+    func testNightDimsAndDayDoesNot() {
+        let cfg = BridgeConfig()
+        XCTAssertEqual(cfg.lit(at: date(hour: 12)).brightness, 1)
+        XCTAssertEqual(cfg.lit(at: date(hour: 7)).brightness, 1, "night ends at 7")
+        XCTAssertEqual(cfg.lit(at: date(hour: 22)).brightness, cfg.nightBrightness)
+        XCTAssertEqual(cfg.lit(at: date(hour: 3)).brightness, cfg.nightBrightness)
+    }
+
+    func testNightBrightnessReachesEveryStatusKey() {
+        let cfg = BridgeConfig().lit(at: date(hour: 2))
+        let thread = StatusMapper.threads(for: [agent("blocked")], cfg)[0]
+        XCTAssertEqual(thread.brightness, BridgeConfig().nightBrightness)
     }
 }

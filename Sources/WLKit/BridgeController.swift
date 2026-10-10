@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import IOKit
 import IOKit.hid
+import os
 
 /// Drives the pad from Herdr agent status: each agent gets its own key, and the
 /// underglow carries a worst-state-wins aggregate.
@@ -23,6 +24,9 @@ public final class BridgeController: ObservableObject {
     @Published public private(set) var isRunning = false
     @Published public private(set) var deviceConnected = false
     @Published public private(set) var keymapReady = false
+    /// Which layer of the pad the keycodes are bound on, 0-based. The pad has
+    /// its own layer switcher, so this is not a constant.
+    @Published public private(set) var activeLayer = 0
     @Published public private(set) var permissionDenied = false
     @Published public private(set) var deviceName = "—"
     @Published public private(set) var firmware = "—"
@@ -36,6 +40,9 @@ public final class BridgeController: ObservableObject {
     /// receive its replies too, so a response id we never issued is a reliable
     /// tell.
     @Published public private(set) var contendingClient = false
+    /// One line per configured remote Herdr that is not answering, so a
+    /// machine that went to sleep reads as that and not as missing agents.
+    @Published public private(set) var remoteProblems: [String] = []
     /// Whether the GitButler stack is on screen. Only the key light cares —
     /// the panel itself lives in the app layer.
     @Published public private(set) var stackPanelOpen = false
@@ -56,8 +63,17 @@ public final class BridgeController: ObservableObject {
     public var onLandKey: (() -> Void)?
     /// Called when either half of the wide voice key is pressed.
     public var onVoiceKey: (() -> Void)?
-    /// Called per dial detent: +1 clockwise, -1 counter-clockwise.
+    /// Called per dial detent: +1 clockwise, -1 counter-clockwise. Silent
+    /// while the dial is configured for something the app layer owns instead.
     public var onDial: ((Int) -> Void)?
+    /// Called with the keystroke a key — or the dial, when it is set to
+    /// volume — is bound to. The bridge decides *which* action; posting it is
+    /// the app layer's job, because it needs the Accessibility grant.
+    public var onAction: ((KeyBindings.Action) -> Void)?
+    /// Presses Herdr's `focus_agent` row binding - alt plus a digit, 1...9 -
+    /// in the frontmost terminal. The app layer posts it, since posting needs
+    /// the Accessibility grant.
+    public var onFocusAgentRow: ((Int) -> Void)?
     /// Called when the joystick enters a cardinal sector.
     public var onJoystick: ((Pad.JoystickDirection) -> Void)?
     /// Consulted before any key does its normal job. Returning true consumes
@@ -70,7 +86,9 @@ public final class BridgeController: ObservableObject {
     private var device = WLDevice()
     /// Non-nil while the bridge is driving a virtual pad instead of hardware.
     @Published public private(set) var emulator: PadEmulator?
-    private var lifecycle: HerdrEventStream?
+    private var lifecycles: [HerdrHost: HerdrEventStream] = [:]
+    private var tunnels: [HerdrTunnel] = []
+    /// Keyed by `HerdrAgent.paneKey`: pane ids repeat across servers.
     private var statusStreams: [String: HerdrEventStream] = [:]
     private var pollTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
@@ -134,9 +152,10 @@ public final class BridgeController: ObservableObject {
         lastError = nil
         contendingClient = false
         keyBindings = KeyBindings.load()
+        startTunnels()
 
         await openDevice()
-        startLifecycleStream()
+        HerdrHosts.shared.all.forEach(startLifecycleStream)
         await refresh()
 
         pollTask = Task { [weak self] in
@@ -155,9 +174,14 @@ public final class BridgeController: ObservableObject {
         pollTask?.cancel(); pollTask = nil
         debounceTask?.cancel(); debounceTask = nil
         reopenTask?.cancel(); reopenTask = nil
-        lifecycle?.stop(); lifecycle = nil
+        lifecycles.values.forEach { $0.stop() }
+        lifecycles.removeAll()
         statusStreams.values.forEach { $0.stop() }
         statusStreams.removeAll()
+        tunnels.forEach { $0.stop() }
+        tunnels = []
+        HerdrHosts.shared.remotes = []
+        remoteProblems = []
         lastFingerprint = nil
 
         // Switching off clears the lights but deliberately leaves the keymap
@@ -223,12 +247,17 @@ public final class BridgeController: ObservableObject {
     /// layer, and nothing reports a mismatch — `v.oai.thstatus` answers
     /// `{"ok":1}` for a key it cannot light. So check rather than assume.
     private func ensureKeymap() async {
+        guard let layer = await KeymapManager.activeLayer(device) else {
+            keymapReady = false
+            lastError = "The pad did not say which layer it is on, so the keys were left alone."
+            return
+        }
+        activeLayer = layer
         do {
             if config.manageKeymap {
-                _ = try await KeymapManager.apply(device)
+                _ = try await KeymapManager.apply(device, layer: layer)
                 keymapReady = true
             } else {
-                let layer = await KeymapManager.activeLayer(device)
                 let cfg = try await KeymapManager.read(device)
                 keymapReady = KeymapManager.isAgentKeymapApplied(cfg, layer: layer)
                 if !keymapReady {
@@ -239,6 +268,21 @@ public final class BridgeController: ObservableObject {
             keymapReady = false
             lastError = "Keymap: \(error.localizedDescription)"
         }
+    }
+
+    /// The pad's own layer switcher moves which layer is live, and the agent
+    /// keycodes only work on the live one. Without this a switch on the
+    /// hardware leaves a pad that lights nothing and answers nothing, with no
+    /// error anywhere - the same silence that made the wrong layer so hard to
+    /// find in the first place.
+    private func followLayerSwitch() async {
+        guard deviceConnected, let layer = await KeymapManager.activeLayer(device),
+              layer != activeLayer
+        else { return }
+        await ensureKeymap()
+        // The pad keeps no lighting across a layer switch, so repaint even
+        // when the picture itself has not changed.
+        lastFingerprint = nil
     }
 
     private func scheduleReopen() {
@@ -260,43 +304,60 @@ public final class BridgeController: ObservableObject {
 
     // MARK: - Herdr events
 
-    private func startLifecycleStream() {
-        guard isRunning else { return }
+    /// Remotes come from the same config file as the keys, so they too follow
+    /// an off/on toggle. Their agents join the list after this Mac's.
+    private func startTunnels() {
+        tunnels = HerdrRemote.load().map(HerdrTunnel.init(remote:))
+        HerdrHosts.shared.remotes = tunnels.map(\.host)
+        for tunnel in tunnels {
+            // Up or down, the agent list just changed.
+            tunnel.onChange = { [weak self] in self?.schedule() }
+            tunnel.start()
+        }
+    }
+
+    /// One per server. A remote's stream fails while its tunnel is down and
+    /// keeps retrying, which is what picks the remote back up once it is.
+    private func startLifecycleStream(_ host: HerdrHost) {
+        guard isRunning, HerdrHosts.shared.all.contains(host) else { return }
         let stream = HerdrEventStream(subscriptions: [
             ["type": "pane.created"],
             ["type": "pane.closed"],
             ["type": "pane.exited"],
             ["type": "pane.agent_detected"],
-        ])
+        ], on: host)
         stream.onEvent = { [weak self] _ in self?.schedule() }
+        stream.onReady = { [weak self] in self?.schedule() }
         stream.onClosed = { [weak self] _ in
             guard let self, self.isRunning else { return }
-            self.lifecycle = nil
+            self.lifecycles[host] = nil
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                self?.startLifecycleStream()
+                self?.startLifecycleStream(host)
             }
         }
-        lifecycle = stream.start()
+        lifecycles[host] = stream.start()
     }
 
     /// One dedicated stream per agent pane: a subscription owns its connection
     /// and cannot be extended after the fact.
     private func reconcileStatusStreams(_ agents: [HerdrAgent]) {
-        let wanted = Set(agents.compactMap(\.paneID))
-        for (paneID, stream) in statusStreams where !wanted.contains(paneID) {
+        let wanted = Set(agents.compactMap(\.paneKey))
+        for (key, stream) in statusStreams where !wanted.contains(key) {
             stream.stop()
-            statusStreams.removeValue(forKey: paneID)
+            statusStreams.removeValue(forKey: key)
         }
-        for paneID in wanted where statusStreams[paneID] == nil {
+        for agent in agents {
+            guard let key = agent.paneKey, let paneID = agent.paneID, statusStreams[key] == nil
+            else { continue }
             let stream = HerdrEventStream(subscriptions: [
                 ["type": "pane.agent_status_changed", "pane_id": paneID],
-            ])
+            ], on: agent.host)
             stream.onEvent = { [weak self] _ in self?.schedule() }
             stream.onClosed = { [weak self] _ in
-                self?.statusStreams.removeValue(forKey: paneID)
+                self?.statusStreams.removeValue(forKey: key)
             }
-            statusStreams[paneID] = stream.start()
+            statusStreams[key] = stream.start()
         }
     }
 
@@ -320,39 +381,51 @@ public final class BridgeController: ObservableObject {
 
     private func refresh() async {
         guard isRunning else { return }
+        await followLayerSwitch()
 
         let fetched: [HerdrAgent]
         do {
-            fetched = try await HerdrClient.listAgents()
+            let result = try await HerdrClient.listAllAgents()
+            fetched = result.agents
+            // This Mac's server failing while a remote answers still leaves
+            // agents to show, so it is an error line, not an early return.
+            lastError = result.failures[.local]?.localizedDescription
+            remoteProblems = remoteProblemLines(result.failures)
         } catch {
             lastError = error.localizedDescription
+            remoteProblems = remoteProblemLines([:])
             return
         }
-        lastError = nil
         agents = fetched
         reconcileStatusStreams(fetched)
 
+        // Day or night is decided per paint; the fingerprint carries the
+        // brightness, so the poll repaints when the clock crosses the line.
+        let config = self.config.lit()
         let state = StatusMapper.aggregate(fetched, config)
         // Macro and voice keys share ids, so the binding decides each key's
         // light: configured text wins, the wide key falls back to voice.
         let flexKeys = keyBindings.flexKeys.map { key -> OAI.Thread in
-            if keyBindings.text(for: key) != nil {
-                return StatusMapper.macroThread(id: key, config)
+            if keyBindings.text(for: key) != nil || keyBindings.action(for: key) != nil {
+                return boundThread(key, config)
             }
             if keyBindings.voiceKeys.contains(key) {
                 return StatusMapper.voiceThread(id: key, active: voiceActive, config)
             }
             return OAI.Thread(id: key, brightness: 0, effect: .off)
         }
-        // Text beats the built-in role at the light too, or a key that now
-        // types a macro would still wear the stack key's violet.
-        let bound = keyBindings.textKeys
-        let threads = (StatusMapper.threads(for: fetched, config)
-            + [StatusMapper.stackThread(open: stackPanelOpen, config),
-               StatusMapper.tabCycleThread(config),
-               StatusMapper.landThread(open: landPanelOpen, config)]
+        // Text and keystrokes beat the built-in role at the light too, or a
+        // key that now types a macro would still wear the stack key's violet.
+        let bound = keyBindings.textKeys.union(keyBindings.actionKeys)
+        // A key claimed for agents drops its built-in light with its role.
+        let builtIns = [StatusMapper.stackThread(open: stackPanelOpen, config),
+                        StatusMapper.tabCycleThread(config),
+                        StatusMapper.landThread(open: landPanelOpen, config)]
+            .filter { keyBindings.keepsBuiltInRole($0.id) }
+        let threads = (StatusMapper.threads(for: fetched, keys: keyBindings.agentKeys, config)
+            + builtIns
             + flexKeys)
-            .map { bound.contains($0.id) ? StatusMapper.macroThread(id: $0.id, config) : $0 }
+            .map { bound.contains($0.id) ? boundThread($0.id, config) : $0 }
 
         // Fingerprint the whole rendered picture, not just the aggregate, so
         // one agent changing still repaints when the worst state has not.
@@ -368,6 +441,24 @@ public final class BridgeController: ObservableObject {
         await apply(state: state, threads: threads)
     }
 
+    /// The light for a key bound to a keystroke or a text macro.
+    private func boundThread(_ key: Int, _ config: BridgeConfig) -> OAI.Thread {
+        if let action = keyBindings.action(for: key) {
+            return StatusMapper.actionThread(id: key, action: action, config)
+        }
+        return StatusMapper.macroThread(id: key, config)
+    }
+
+    /// The tunnel's own reason wins: "connection refused" on the local end of
+    /// a tunnel that is not up says nothing about why.
+    private func remoteProblemLines(_ failures: [HerdrHost: Error]) -> [String] {
+        tunnels.compactMap { tunnel in
+            if let reason = tunnel.lastError { return "\(tunnel.remote.name): \(reason)" }
+            if let error = failures[tunnel.host] { return "\(tunnel.remote.name): \(error.localizedDescription)" }
+            return nil
+        }
+    }
+
     private func publishKeyState(_ threads: [OAI.Thread]) {
         var colors: [Int: Color] = [:]
         var effects: [Int: OAI.Effect] = [:]
@@ -381,10 +472,13 @@ public final class BridgeController: ObservableObject {
         keyEffects = effects
     }
 
+    private static let log = Logger(subsystem: "cc.worklouder.wlkit", category: "bridge")
+
     private func apply(state: String?, threads: [OAI.Thread]) async {
         guard deviceConnected else { return }
         do {
             _ = try await device.callAsync(OAI.methodThreads, params: OAI.threadsParams(threads))
+            let config = self.config.lit()
             let zone = StatusMapper.zone(for: state, config) ?? .dark
             _ = try await device.callAsync(
                 OAI.methodRGBConfig,
@@ -393,7 +487,11 @@ public final class BridgeController: ObservableObject {
                     ambient: zone
                 )
             )
+            let lit = threads.filter { ($0.brightness ?? 0) > 0 }
+                .map { "\($0.id)=\(String(format: "%06X", $0.color ?? 0))" }.joined(separator: " ")
+            Self.log.notice("painted \(state ?? "-", privacy: .public): \(lit, privacy: .public)")
         } catch {
+            Self.log.error("paint failed: \(error.localizedDescription, privacy: .public)")
             lastError = error.localizedDescription
             lastFingerprint = nil   // repaint on the next tick
         }
@@ -423,6 +521,11 @@ public final class BridgeController: ObservableObject {
         // keys useful on a machine with no GitButler to drive.
         if let text = keyBindings.text(for: index) {
             Task { await injectPrompt(text) }
+        } else if let action = keyBindings.action(for: index) {
+            onAction?(action)
+        } else if let slot = keyBindings.agentSlot(for: index) {
+            // Ahead of the built-in roles: "agents" may claim their keys.
+            Task { await focusSlot(slot) }
         } else if index == Pad.stackKeyID {
             onStackKey?()
         } else if index == Pad.tabCycleKeyID {
@@ -432,11 +535,24 @@ public final class BridgeController: ObservableObject {
         } else if keyBindings.voiceKeys.contains(index) {
             onVoiceKey?()
         } else if index == Pad.dialUpID || index == Pad.dialDownID {
-            onDial?(index == Pad.dialUpID ? 1 : -1)
+            let step = index == Pad.dialUpID ? 1 : -1
+            switch keyBindings.dial {
+            case .effort: onDial?(step)
+            case .volume: onAction?(step > 0 ? .volumeUp : .volumeDown)
+            }
         } else if let direction = Pad.JoystickDirection(keyID: index) {
-            onJoystick?(direction)
-        } else if let slot = Pad.agentSlot(for: index) {
-            Task { await focusSlot(slot) }
+            switch keyBindings.joystick {
+            case .model:
+                onJoystick?(direction)
+            case .agents:
+                // East and west stay free: a list walked with two directions
+                // has nothing for the other two to mean.
+                switch direction {
+                case .north: Task { await focusAdjacentAgent(1) }
+                case .south: Task { await focusAdjacentAgent(-1) }
+                case .east, .west: break
+                }
+            }
         }
     }
 
@@ -450,7 +566,7 @@ public final class BridgeController: ObservableObject {
                 lastError = "Nothing has focus in Herdr right now."
                 return
             }
-            try await HerdrClient.sendText(paneID: pane, text: text)
+            try await HerdrClient.sendText(paneID: pane, text: text, on: agent.host)
         } catch {
             lastError = error.localizedDescription
         }
@@ -472,7 +588,7 @@ public final class BridgeController: ObservableObject {
     /// Advances the focused workspace to its next tab, wrapping.
     public func cycleTabs() async {
         do {
-            try await HerdrClient.cycleTabs()
+            try await HerdrClient.cycleTabs(on: HerdrHosts.shared.active)
         } catch {
             lastError = error.localizedDescription
         }
@@ -493,7 +609,7 @@ public final class BridgeController: ObservableObject {
         await forceRepaint()
     }
 
-    /// Slot N is the Nth key in reading order (`Pad.agentKeyIDs[N]`) — the
+    /// Slot N is the Nth agent key (`keyBindings.agentKeys[N]`) — the
     /// same mapping the lighting uses, which is what makes the key you look at
     /// the key you press.
     ///
@@ -509,23 +625,95 @@ public final class BridgeController: ObservableObject {
                 : "Nothing on that key — Herdr has \(agents.count) agent\(agents.count == 1 ? "" : "s")."
             return
         }
-        guard let target = agents[index].focusTarget else {
-            lastError = "Herdr gave no pane for \(agents[index].shortName)."
+        let agent = agents[index]
+        guard let target = agent.focusTarget else {
+            lastError = "Herdr gave no pane for \(agent.shortName)."
             return
         }
         do {
             // `pane.focus` is what actually moves the rendered view; a pane id
             // is what it takes, so `agent.focus` only covers the fallback case
             // where Herdr reported no pane and `target` is a terminal id.
-            if let pane = agents[index].paneID {
-                try await HerdrClient.focusPane(pane)
+            if let pane = agent.paneID {
+                try await HerdrClient.focusPane(pane, on: agent.host)
             } else {
-                try await HerdrClient.focusAgent(target)
+                try await HerdrClient.focusAgent(target, on: agent.host)
             }
+            // What the dial, the macros and tab cycling act on from now on.
+            HerdrHosts.shared.active = agent.host
             raiseTerminal()
+            try await switchClientMachine(to: index, agent: agent)
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Moves focus along Herdr's agent list, wrapping: +1 for the next
+    /// agent, -1 for the previous one.
+    ///
+    /// Where focus is comes from Herdr rather than from anything remembered
+    /// here, so a jump made with an agent key, or with the mouse, is the place
+    /// the next deflection steps from. Focus outside the list — a browser, a
+    /// pane with no agent — starts at whichever end the direction implies.
+    public func focusAdjacentAgent(_ step: Int) async {
+        guard !agents.isEmpty else {
+            lastError = "No agents in Herdr right now."
+            return
+        }
+        let focused = try? await HerdrClient.focusedAgent()
+        let current = focused?.paneKey.flatMap { key in
+            agents.firstIndex { $0.paneKey == key }
+        }
+        let from = current ?? (step > 0 ? -1 : 0)
+        await focusSlot((from + step + agents.count) % agents.count)
+    }
+
+    /// Puts the Herdr client on the agent's machine.
+    ///
+    /// A client with machines added shows one machine at a time, and which one
+    /// is the client's business: the socket API has no call for it, and
+    /// `pane.focus` only moves a server's focus - so a key for an agent on the
+    /// machine not on screen changed nothing you could see. The client's own
+    /// `focus_agent` binding does switch machine; it is keyed by agent panel
+    /// row, which follows the same order as the keys (this Mac, then each
+    /// remote, each in sidebar order).
+    ///
+    /// Only rows 1 to 9 have a binding, and the panel's order is Herdr's, so
+    /// the row is used to land on the right *machine*, and `pane.focus` right
+    /// after it picks the exact pane. Any row of the same machine will do for
+    /// an agent past row 9.
+    private func switchClientMachine(to index: Int, agent: HerdrAgent) async throws {
+        guard !HerdrHosts.shared.remotes.isEmpty, let onFocusAgentRow,
+              let row = ([index] + Array(agents.indices))
+                .first(where: { $0 < 9 && agents[$0].host == agent.host }),
+              await waitForTerminal()
+        else { return }
+        Self.log.notice("slot \(index) on \(agent.host.name ?? "local", privacy: .public): herdr row \(row + 1), then pane \(agent.paneID ?? "-", privacy: .public)")
+        onFocusAgentRow(row + 1)
+        // Let the client act on the keystroke before the server-side focus
+        // lands, or the row's agent wins over the one that was asked for.
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        if let pane = agent.paneID {
+            try await HerdrClient.focusPane(pane, on: agent.host)
+        }
+    }
+
+    /// True once the terminal is the active app, for up to half a second: a
+    /// keystroke posted before that goes to whatever was in front.
+    private func waitForTerminal() async -> Bool {
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: terminalBundleID).first
+        else { return false }
+        for _ in 0..<20 {
+            if app.isActive { return true }
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return app.isActive
+    }
+
+    private var terminalBundleID: String {
+        ProcessInfo.processInfo.environment["WL_TERMINAL_BUNDLE_ID"]
+            .flatMap { $0.isEmpty ? nil : $0 } ?? Self.defaultTerminalBundleID
     }
 
     /// The app Herdr's panes live in. Override with `WL_TERMINAL_BUNDLE_ID` if
@@ -542,10 +730,8 @@ public final class BridgeController: ObservableObject {
     /// `openApplication` on an already-running app raises it the way `open -a`
     /// does.
     private func raiseTerminal() {
-        let identifier = ProcessInfo.processInfo.environment["WL_TERMINAL_BUNDLE_ID"]
-            .flatMap { $0.isEmpty ? nil : $0 } ?? Self.defaultTerminalBundleID
         guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: identifier).first
+            .runningApplications(withBundleIdentifier: terminalBundleID).first
         else { return }
         guard !app.isActive else { return }
         if app.activate(options: []) { return }

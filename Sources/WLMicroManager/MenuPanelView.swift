@@ -32,6 +32,15 @@ struct MenuPanelView: View {
                     .padding(.horizontal, 14).padding(.vertical, 8)
             }
 
+            ForEach(bridge.remoteProblems, id: \.self) { problem in
+                Divider()
+                Label(problem, systemImage: "network.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+            }
+
             if bridge.contendingClient {
                 Divider()
                 Label(
@@ -88,7 +97,7 @@ struct MenuPanelView: View {
 
     private var padSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(Pad.displayRows.enumerated()), id: \.offset) { _, row in
+            ForEach(Array(bridge.keyBindings.displayRows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 6) {
                     ForEach(row, id: \.self) { key in keyView(key) }
                     Spacer(minLength: 0)
@@ -101,14 +110,16 @@ struct MenuPanelView: View {
     private func keyView(_ index: Int) -> some View {
         let color = bridge.keyColors[index]
         let isBound = Pad.boundKeyIDs.contains(index)
-        let isStackKey = index == Pad.stackKeyID
-        let isTabCycleKey = index == Pad.tabCycleKeyID
-        let isLandKey = index == Pad.landKeyID
+        let keepsRole = bridge.keyBindings.keepsBuiltInRole(index)
+        let isStackKey = keepsRole && index == Pad.stackKeyID
+        let isTabCycleKey = keepsRole && index == Pad.tabCycleKeyID
+        let isLandKey = keepsRole && index == Pad.landKeyID
         let macroText = bridge.keyBindings.text(for: index)
+        let action = bridge.keyBindings.action(for: index)
         let isVoiceKey = bridge.keyBindings.isVoiceKey(index)
         // Key index and agent slot are different orderings — the top row is
         // wired right to left — so the slot lookup goes through the pad map.
-        let slot = Pad.agentSlot(for: index)
+        let slot = bridge.keyBindings.agentSlot(for: index)
         let agent = slot.flatMap { $0 < bridge.agents.count ? bridge.agents[$0] : nil }
 
         return Button {
@@ -116,6 +127,8 @@ struct MenuPanelView: View {
             // clicked key does what the real key under it would do.
             if let macroText {
                 Task { await bridge.injectPrompt(macroText) }
+            } else if let action {
+                KeystrokeController.shared.handle(action)
             } else if isStackKey {
                 StackPanelController.shared.toggle()
             } else if isTabCycleKey {
@@ -138,10 +151,10 @@ struct MenuPanelView: View {
         }
         .buttonStyle(.plain)
         .disabled(agent == nil && !isStackKey && !isTabCycleKey && !isLandKey
-                  && macroText == nil && !isVoiceKey)
+                  && macroText == nil && action == nil && !isVoiceKey)
         .help(helpText(index, agent: agent, isStackKey: isStackKey,
                        isTabCycleKey: isTabCycleKey, isLandKey: isLandKey,
-                       macroText: macroText, isVoiceKey: isVoiceKey))
+                       macroText: macroText, action: action, isVoiceKey: isVoiceKey))
     }
 
     private func helpText(
@@ -151,9 +164,11 @@ struct MenuPanelView: View {
         isTabCycleKey: Bool,
         isLandKey: Bool,
         macroText: String?,
+        action: KeyBindings.Action?,
         isVoiceKey: Bool
     ) -> String {
         if let macroText { return "Types: \(macroText)" }
+        if let action { return "Sends: \(action.label)" }
         if isStackKey { return "GitButler stack for the focused agent" }
         if isTabCycleKey { return "Cycle tabs in the focused Herdr window" }
         if isLandKey { return "Land the focused agent's branches onto the target" }
@@ -172,18 +187,25 @@ struct MenuPanelView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.vertical, 10)
             } else {
-                ForEach(Array(bridge.agents.prefix(Pad.agentKeyIDs.count).enumerated()), id: \.offset) { index, agent in
+                ForEach(Array(bridge.agents.prefix(bridge.keyBindings.agentKeys.count).enumerated()), id: \.offset) { index, agent in
                     Button {
                         Task { await bridge.focusSlot(index) }
                     } label: {
                         HStack(spacing: 9) {
                             Circle()
-                                .fill(bridge.keyColors[Pad.agentKeyIDs[index]] ?? Color.secondary.opacity(0.3))
+                                .fill(bridge.keyColors[bridge.keyBindings.agentKeys[index]] ?? Color.secondary.opacity(0.3))
                                 .frame(width: 9, height: 9)
                             Text("\(index)")
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                             Text(agent.shortName).lineLimit(1)
+                            if let remote = agent.host.name {
+                                Text(remote)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            }
                             Spacer(minLength: 8)
                             Text(agent.status)
                                 .font(.caption)

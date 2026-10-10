@@ -340,7 +340,12 @@ The shape you care about, from a stock Creator Micro 2:
 ```
 
 `layer_index` from `device.status` is 1-based against the `layers` list, so the
-active layer is `layers[0]`.
+active layer is `layers[layer_index - 1]`. **Read it, do not assume it is the
+first.** A pad whose layer switcher sits on layer 2 or 3 ignores everything
+written to layer 1: no key reports, no per-key colours, and every write still
+answers ok. The spare layers also ship empty — `KC_NONE` throughout and, in the
+`joystick` object, an empty `sectors` array — so binding there means writing the
+sectors rather than rewriting them.
 
 ### Back it up first
 
@@ -356,14 +361,16 @@ Read, modify, write, then **read back and verify** — the write is accepted
 whether or not it took.
 
 ```js
-// Bind key 3 (row 1, column 1) so it can be lit.
-const layer = config.profiles[config.activeProfileId ?? 0].layers[0];
+// Bind key 3 (row 1, column 1) so it can be lit, on the layer the pad is on.
+const { layer_index } = await dev.call("device.status");
+const active = layer_index - 1;
+const layer = config.profiles[config.activeProfileId ?? 0].layers[active];
 layer.layout.keymap[1][1] = "KV_OAI_AG03";
 
 await dev.call("fs.write", { file: "keymap.json", data: JSON.stringify(config) });
 
 const after = JSON.parse((await dev.call("fs.read", { file: "keymap.json" })).data);
-console.log(after.profiles[0].layers[0].layout.keymap);
+console.log(after.profiles[0].layers[active].layout.keymap);
 ```
 
 Key *N* takes keycode `KV_OAI_AG` + zero-padded *N* — key 3 is `KV_OAI_AG03`.

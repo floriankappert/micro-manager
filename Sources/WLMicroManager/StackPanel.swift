@@ -92,6 +92,14 @@ final class StackPanelController {
                 body: PanelHTML.note("Nothing has focus in Herdr right now.")
             )
         }
+        // GitButler runs here, against this Mac's checkouts.
+        if let remote = agent.host.name {
+            return Payload(
+                title: agent.shortName,
+                subtitle: remote,
+                body: PanelHTML.note("This agent runs on \(remote). The stack only works for agents on this Mac.")
+            )
+        }
         guard let directory = agent.workingDirectory else {
             return Payload(
                 title: agent.shortName,

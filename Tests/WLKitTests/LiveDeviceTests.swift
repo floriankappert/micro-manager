@@ -24,12 +24,19 @@ final class LiveDeviceTests: XCTestCase {
         let device = try connected()
         defer { device.disconnect(reason: nil) }
 
+        // Ask the pad which layer it is on rather than assuming the first.
+        // A pad whose layer switcher sits elsewhere carries the codes there,
+        // and checking layer 1 regardless is the very mistake this guards.
+        let reported = await KeymapManager.activeLayer(device)
+        let layer = try XCTUnwrap(reported, "device.status reported no layer_index")
+        print("active layer: \(layer + 1)")
+
         let config = try await KeymapManager.read(device)
-        let keymap = try XCTUnwrap(KeymapManager.activeLayerKeymap(config))
+        let keymap = try XCTUnwrap(KeymapManager.activeLayerKeymap(config, layer: layer))
         keymap.enumerated().forEach { print("row \($0.offset): \($0.element)") }
 
         let at = try XCTUnwrap(Pad.position(of: Pad.stackKeyID))
         XCTAssertEqual(keymap[at.row][at.column], "KV_OAI_AG06")
-        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(config))
+        XCTAssertTrue(KeymapManager.isAgentKeymapApplied(config, layer: layer))
     }
 }

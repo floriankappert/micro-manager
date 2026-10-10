@@ -58,10 +58,19 @@ struct MicroManagerApp: App {
                     }
                     bridge.onDial = { step in tune.handleDial(step) }
                     bridge.onJoystick = { direction in tune.handleJoystick(direction) }
+
+                    let keystrokes = KeystrokeController.shared
+                    keystrokes.onError = { [weak bridge] message in
+                        bridge?.noteError(message)
+                    }
+                    bridge.onAction = { action in keystrokes.handle(action) }
+                    bridge.onFocusAgentRow = { row in keystrokes.focusAgentRow(row) }
                     // While a land confirmation is up, every key that is not
                     // the land key means "cancel", nothing else.
-                    bridge.onKeyIntercept = { index in
-                        guard index != Pad.landKeyID else { return false }
+                    bridge.onKeyIntercept = { [weak bridge] index in
+                        let isLandKey = index == Pad.landKeyID
+                            && bridge?.keyBindings.keepsBuiltInRole(index) != false
+                        guard !isLandKey else { return false }
                         return land.handleOtherKey()
                     }
 

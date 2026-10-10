@@ -33,14 +33,15 @@ all three drive the same lighting and will overwrite each other.
 ## What the pad does
 
 **The icon** shows state at a glance: dimmed when off, a coloured dot when
-running — green all idle, amber something working, red something needs you —
+running — plain when all idle, orange something working, red something needs you —
 and a badge when the pad is missing or permission is denied.
 
 **The top six keys** are one agent each, in the order Herdr's own panel lists
-them. Colours are red (blocked, breathing), amber (working), blue (done —
-finished but not yet looked at) and green (idle — finished and seen). Herdr
-distinguishes done from idle by whether you have focused the pane yet, so blue
-means something is waiting to be read and green means quiet. The **underglow**
+them. A colour is a status, never an agent: red (blocked, breathing fast), orange
+(working, breathing at a medium pace) and green (done — finished but not yet looked at, breathing slowly).
+Idle and unknown keys are dark. Herdr distinguishes done from idle by whether
+you have focused the pane yet, so a breathing green key is waiting to be read
+and a dark one is quiet. Between 22:00 and 07:00 every light drops to 35 %. The **underglow**
 carries the worst state across all agents, so "does anything need me?" is
 readable from across the room.
 
@@ -64,6 +65,8 @@ macro key.
 
 **The dial** tunes reasoning effort. **The joystick** switches model: it puts
 the model list on screen, north and south move, east confirms, west cancels.
+Both can be pointed somewhere else in the config file — the dial at the system
+volume, the joystick at focus, walking Herdr's agent list.
 
 ### The stack key
 
@@ -150,7 +153,11 @@ the dial and joystick offer, drop a `config.json` into
     "12":    "Run but pull",
     "10+11": "Summarise what you are working on"
   },
-  "voice": [11, 12],
+  "actions": { "10+11": "enter", "9": "delete" },
+  "dial":     "volume",
+  "joystick": "agents",
+  "voice":  [11, 12],
+  "agents": [0, 1, 2, 3, 4, 5],
   "claude": { "models": ["fable", "opus"], "efforts": ["low", "high"] },
   "codex":  { "models": ["gpt-5.6-sol", "gpt-5.6-codex"] }
 }
@@ -162,10 +169,57 @@ and `"11"` address its halves. Keys the file does not mention keep their
 defaults, and an empty string unbinds a key outright. Binding the wide key to
 text replaces its right-command tap.
 
+`"actions"` puts a plain keystroke on a key instead of a macro — `enter`,
+`delete` (forward delete, ⌦), `backspace` (⌫), `escape`, `volume-up`,
+`volume-down`. It is posted as a real key event rather than sent to a pane, so
+it lands wherever focus is and works with Herdr closed. Keys are addressed the
+same way, a keystroke drops the key's default macro, and a `"keys"` entry on
+the same key still wins. A name nothing matches is ignored, so a typo leaves
+the key as it was.
+
+`"dial"` and `"joystick"` choose what those two controls drive. `"effort"` and
+`"model"` are the agent tuning above, and the defaults. `"volume"` makes the
+dial the system volume — clockwise louder, with the usual macOS HUD.
+`"agents"` makes the joystick walk Herdr's agent list: north the next agent,
+south the previous one, east and west unused. It reads focus from Herdr rather
+than remembering it, so a jump made with an agent key is where the next
+deflection steps from.
+
+Keystrokes and the volume keys need the **Accessibility** grant, the same one
+the wide key already needs for Superwhisper.
+
+`"agents"` is the order the six agent keys fill: agent slot N takes the Nth
+entry. The default `[1, 0, 2, 3, 4, 5]` compensates for a top row wired right to
+left, so the first agent lands on the top-left key. Pads differ here; if yours
+fills the top row the wrong way round, swap the first two entries. Press a key
+and watch the Inspector to see which code a cap really sends. More keys can
+follow the six for more agents: `[0, 1, 2, 3, 4, 5, 6, 7, 8]` hands row three
+to agents too, and those keys lose their stack, tab-cycle and land roles (an
+explicit `"keys"` or `"actions"` entry on one still wins). A list that does not
+hold the keys 0 to 5, or names a key twice, is ignored.
+
+`"remotes"` adds the agents of Herdr servers on other machines, after this
+Mac's own:
+
+```json
+"remotes": [{ "name": "omarchy", "ssh": "omarchy-flo" }]
+```
+
+The app forwards each remote's socket over `ssh -L` into
+`~/.config/micromanager/tunnels/` and keeps the tunnel up, so the destination
+must be reachable without a prompt: a key in the agent, or Tailscale SSH.
+`"socket"` sets the remote socket path when the default does not apply. A
+remote agent's key focuses it in *that* server, and from then on the dial,
+joystick, macros and tab cycling act on that server until a key sends you
+elsewhere. The stack and land keys only work for agents on this Mac. A remote
+that is not answering shows up in the menu without blanking the local keys.
+
 `"voice"` names the keys that tap right command for Superwhisper. The default
 is the wide key, matrix positions 10 and 11. A pad with single keys along the
 bottom row can move the role, for example to 11 and 12; a key named there drops
-its default macro, while an explicit `"keys"` entry on it still wins.
+its default macro, while an explicit `"keys"` entry on it still wins. `"10+11"`
+always means the two positions under that cap; `"voice"` addresses the role
+wherever it currently sits.
 
 `codex.models` is your copy of what Codex's own `/model` menu offers, in its
 order — the joystick steers that menu rather than owning it, so there is nothing

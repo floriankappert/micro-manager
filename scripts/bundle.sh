@@ -22,6 +22,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# SwiftUI's property wrappers are macros, and the macro plugin that implements
+# them ships only with Xcode - the Command Line Tools stopped carrying it as of
+# macOS 26. Without it every SwiftUI file fails with "plugin for module
+# 'SwiftUIMacros' not found", which reads like a code error and is not. Point
+# the toolchain at Xcode when it is installed but not selected, so this works
+# without `sudo xcode-select -s`.
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]] \
+    && [[ "$(xcode-select -p 2>/dev/null)" != /Applications/Xcode.app/* ]]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    echo "==> using Xcode's toolchain (the Command Line Tools have no SwiftUI macros)"
+fi
+
 APP_NAME="MicroManager"
 BUNDLE_ID="cc.worklouder.micromanager"
 INSPECTOR_NAME="Inspector"

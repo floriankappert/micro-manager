@@ -11,24 +11,45 @@ import SwiftUI
 public struct BridgeConfig: Sendable {
     /// Highest priority first: the first state present across all agents wins
     /// the underglow.
-    public var priority: [String] = ["blocked", "working", "unknown", "idle", "done"]
+    public var priority: [String] = ["blocked", "working", "done", "idle", "unknown"]
     public var colors: [String: Int] = [
         "blocked": 0xFF2D2D,
-        "working": 0xFFA000,
+        "working": 0xFF6A00,
         // Herdr reports "done" for an agent that has finished and that you
         // have not looked at yet, and "idle" once it is focused. That is a
         // real difference - one is waiting to be read, the other is just
-        // quiet - so give them different colours.
-        "done": 0x00B0FF,
-        "idle": 0x00C853,
-        "unknown": 0x00C853,
+        // quiet - so done is lit green and idle is dark.
+        "done": 0x00C853,
+        "idle": 0x000000,
+        "unknown": 0x000000,
     ]
     public var effects: [String: OAI.Effect] = [
         "blocked": .breath,
+        "working": .breath,
+        "idle": .off,
+        "done": .breath,
+        "unknown": .off,
+    ]
+    /// Where the underglow differs from the keys: it lights the whole pad, so
+    /// it stays steady while an agent works and only breathes when something
+    /// needs you.
+    public var zoneEffects: [String: OAI.Effect] = [
         "working": .solid,
-        "idle": .solid,
-        "done": .solid,
-        "unknown": .solid,
+    ]
+    /// Brightness relative to `brightness`: what needs you is full, and what
+    /// is calm (idle) or unknown is dark.
+    public var brightnesses: [String: Double] = [
+        "blocked": 1,
+        "done": 1,
+        "working": 0.8,
+        "idle": 0,
+        "unknown": 0,
+    ]
+    /// Breathing pace: urgent is quick, "finished, read me" is slow, and
+    /// working sits between at the default.
+    public var speeds: [String: Double] = [
+        "blocked": 0.8,
+        "done": 0.25,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.
@@ -39,12 +60,21 @@ public struct BridgeConfig: Sendable {
     /// The land key pushes to the target, so it gets a colour with some weight
     /// to it — distinct from blocked-red, which means "look", not "beware".
     public var landColor: Int = 0xE91E63
-    /// The voice key: white at rest, recording-red while a take is open.
-    public var voiceColor: Int = 0xECEFF1
-    public var voiceActiveColor: Int = 0xFF3B30
+    /// The voice key is always red: lit steadily at rest, breathing while
+    /// Whisper is listening.
+    public var voiceColor: Int = 0xFF3B30
+    /// The return key: blue, lit steadily like the voice key.
+    public var enterColor: Int = 0x00B0FF
     /// Text-macro keys: a quiet steel blue — bound, but not status-bearing.
     public var macroColor: Int = 0x90A4AE
+    /// Master level for every light on the pad, keys and underglow alike, by
+    /// day. At night `nightBrightness` takes over; see `lit(at:)`.
     public var brightness: Double = 1
+    public var nightBrightness: Double = 0.35
+    /// Night runs from `nightStartHour` to `nightEndHour` local time, across
+    /// midnight.
+    public var nightStartHour = 22
+    public var nightEndHour = 7
     public var speed: Double = 0.5
     /// Leave the key-backlight ZONE alone: keys are painted per-agent instead,
     /// and a zone colour would only compete with them.
@@ -57,8 +87,29 @@ public struct BridgeConfig: Sendable {
 
     public init() {}
 
-    public func color(for state: String) -> Int { colors[state] ?? 0xFFFFFF }
-    public func effect(for state: String) -> OAI.Effect { effects[state] ?? .solid }
+    public func isNight(at date: Date = Date(), calendar: Calendar = .current) -> Bool {
+        let hour = calendar.component(.hour, from: date)
+        return nightStartHour > nightEndHour
+            ? hour >= nightStartHour || hour < nightEndHour
+            : hour >= nightStartHour && hour < nightEndHour
+    }
+
+    /// This config with the master brightness for the time of day. Everything
+    /// that paints the pad goes through it, so one value dims it all.
+    public func lit(at date: Date = Date(), calendar: Calendar = .current) -> BridgeConfig {
+        var copy = self
+        if isNight(at: date, calendar: calendar) { copy.brightness = nightBrightness }
+        return copy
+    }
+
+    /// A status Herdr invents later reads as `unknown`, i.e. dark, rather
+    /// than borrowing some other state's look.
+    private func known(_ state: String) -> String { colors[state] == nil ? "unknown" : state }
+
+    public func color(for state: String) -> Int { colors[known(state)] ?? 0 }
+    public func effect(for state: String) -> OAI.Effect { effects[known(state)] ?? .off }
+    public func brightness(for state: String) -> Double { brightness * (brightnesses[known(state)] ?? 0) }
+    public func speed(for state: String) -> Double { speeds[known(state)] ?? speed }
 }
 
 public enum StatusMapper {
@@ -77,9 +128,10 @@ public enum StatusMapper {
     /// clears its key rather than leaving it stale.
     public static func threads(
         for agents: [HerdrAgent],
+        keys: [Int] = Pad.agentKeyIDs,
         _ cfg: BridgeConfig = BridgeConfig()
     ) -> [OAI.Thread] {
-        Pad.agentKeyIDs.enumerated().map { slot, id in
+        keys.enumerated().map { slot, id in
             guard slot < agents.count else {
                 return OAI.Thread(id: id, brightness: 0, effect: .off)
             }
@@ -87,9 +139,9 @@ public enum StatusMapper {
             return OAI.Thread(
                 id: id,
                 color: cfg.color(for: state),
-                brightness: cfg.brightness,
+                brightness: cfg.brightness(for: state),
                 effect: cfg.effect(for: state),
-                speed: cfg.speed
+                speed: cfg.speed(for: state)
             )
         }
     }
@@ -139,8 +191,8 @@ public enum StatusMapper {
     }
 
     /// One half of the voice key — the callers paint both matrix positions
-    /// identically so the single wide keycap reads as one light. Dim white at
-    /// rest; breathing red while a Claude voice take is open.
+    /// identically so the single wide keycap reads as one light. Steady red at
+    /// rest; breathing red while Whisper is listening.
     public static func voiceThread(
         id: Int,
         active: Bool,
@@ -148,9 +200,26 @@ public enum StatusMapper {
     ) -> OAI.Thread {
         OAI.Thread(
             id: id,
-            color: active ? cfg.voiceActiveColor : cfg.voiceColor,
-            brightness: active ? cfg.brightness : cfg.brightness * 0.25,
+            color: cfg.voiceColor,
+            brightness: cfg.brightness,
             effect: active ? .breath : .solid,
+            speed: cfg.speed
+        )
+    }
+
+    /// A key that sends a keystroke: the return key is lit steadily in blue,
+    /// any other action is as quiet as a macro.
+    public static func actionThread(
+        id: Int,
+        action: KeyBindings.Action,
+        _ cfg: BridgeConfig = BridgeConfig()
+    ) -> OAI.Thread {
+        guard action == .enter else { return macroThread(id: id, cfg) }
+        return OAI.Thread(
+            id: id,
+            color: cfg.enterColor,
+            brightness: cfg.brightness,
+            effect: .solid,
             speed: cfg.speed
         )
     }
@@ -169,11 +238,11 @@ public enum StatusMapper {
 
     /// The underglow zone for an aggregate state, or nil to switch it off.
     public static func zone(for state: String?, _ cfg: BridgeConfig = BridgeConfig()) -> OAI.Zone? {
-        guard let state else { return nil }
+        guard let state, cfg.effect(for: state) != .off else { return nil }
         return OAI.Zone(
-            effect: cfg.effect(for: state),
-            brightness: cfg.brightness,
-            speed: cfg.speed,
+            effect: cfg.zoneEffects[state] ?? cfg.effect(for: state),
+            brightness: cfg.brightness(for: state),
+            speed: cfg.speed(for: state),
             magic: 1,
             color: cfg.color(for: state)
         )
