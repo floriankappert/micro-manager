@@ -11,7 +11,7 @@ import SwiftUI
 public struct BridgeConfig: Sendable {
     /// Highest priority first: the first state present across all agents wins
     /// the underglow.
-    public var priority: [String] = ["blocked", "working", "done", "idle", "unknown"]
+    public var priority: [String] = ["blocked", "working", "review", "done", "idle", "unknown"]
     public var colors: [String: Int] = [
         "blocked": 0xFF2D2D,
         "working": 0xFF6A00,
@@ -20,6 +20,9 @@ public struct BridgeConfig: Sendable {
         // real difference - one is waiting to be read, the other is just
         // quiet - so done is lit green and idle is dark.
         "done": 0x00C853,
+        // Review is an idle agent that bhote has waiting on you (it asked a
+        // question). It is as pressing as done, so it looks the same.
+        "review": 0x00C853,
         "idle": 0x000000,
         "unknown": 0x000000,
     ]
@@ -28,6 +31,7 @@ public struct BridgeConfig: Sendable {
         "working": .breath,
         "idle": .off,
         "done": .breath,
+        "review": .breath,
         "unknown": .off,
     ]
     /// Where the underglow differs from the keys: it lights the whole pad, so
@@ -41,6 +45,7 @@ public struct BridgeConfig: Sendable {
     public var brightnesses: [String: Double] = [
         "blocked": 1,
         "done": 1,
+        "review": 1,
         "working": 0.8,
         "idle": 0,
         "unknown": 0,
@@ -50,6 +55,7 @@ public struct BridgeConfig: Sendable {
     public var speeds: [String: Double] = [
         "blocked": 0.8,
         "done": 0.25,
+        "review": 0.25,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.
@@ -70,7 +76,7 @@ public struct BridgeConfig: Sendable {
     /// Master level for every light on the pad, keys and underglow alike, by
     /// day. At night `nightBrightness` takes over; see `lit(at:)`.
     public var brightness: Double = 1
-    public var nightBrightness: Double = 0.35
+    public var nightBrightness: Double = 1
     /// Night runs from `nightStartHour` to `nightEndHour` local time, across
     /// midnight.
     public var nightStartHour = 22
@@ -129,6 +135,7 @@ public enum StatusMapper {
     public static func threads(
         for agents: [HerdrAgent],
         keys: [Int] = Pad.agentKeyIDs,
+        workingSince: [Date?] = [],
         _ cfg: BridgeConfig = BridgeConfig()
     ) -> [OAI.Thread] {
         keys.enumerated().map { slot, id in
@@ -141,9 +148,20 @@ public enum StatusMapper {
                 color: cfg.color(for: state),
                 brightness: cfg.brightness(for: state),
                 effect: cfg.effect(for: state),
-                speed: cfg.speed(for: state)
+                speed: state == "working" && slot < workingSince.count
+                    ? breathSpeed(base: cfg.speed(for: state), since: workingSince[slot])
+                    : cfg.speed(for: state)
             )
         }
+    }
+
+    /// Working keys breathe at a pace nudged by when each agent started, so two
+    /// of them drift apart instead of pulsing in lockstep. The nudge is a
+    /// pure function of the start time (+-8 %), so a repaint never changes it.
+    public static func breathSpeed(base: Double, since: Date?) -> Double {
+        guard let since else { return base }
+        let step = Int(since.timeIntervalSinceReferenceDate) % 7
+        return base * (0.92 + 0.0267 * Double(step))
     }
 
     /// The stack key's own thread. It stays lit whenever the bridge is

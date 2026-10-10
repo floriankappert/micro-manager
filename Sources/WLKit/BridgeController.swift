@@ -93,7 +93,21 @@ public final class BridgeController: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var reopenTask: Task<Void, Never>?
-    private var lastFingerprint: String?
+    private var lastFingerprint: String? {
+        // A full repaint rewrites every key, so forget what was last sent.
+        didSet { if lastFingerprint == nil { sentThreads = [:] } }
+    }
+    /// What each key was last told. Only keys whose picture changed are
+    /// rewritten, so a key that keeps its look is not disturbed when another
+    /// agent changes state (a write may restart the key's breathing).
+    private var sentThreads: [Int: OAI.Thread] = [:]
+    /// Panes whose bhote topic is in review, refreshed in the background so a
+    /// slow bhote never holds up a repaint.
+    private var reviewPanes: Set<String> = []
+    private var reviewFetchedAt = Date.distantPast
+    private var reviewFetching = false
+    /// When each agent was first seen working, by `HerdrAgent.paneKey`.
+    private var workingSince: [String: Date] = [:]
     private var issuedIDs = Set<Int>()
     private var warnedPermission = false
 
@@ -383,10 +397,10 @@ public final class BridgeController: ObservableObject {
         guard isRunning else { return }
         await followLayerSwitch()
 
-        let fetched: [HerdrAgent]
+        let listed: [HerdrAgent]
         do {
             let result = try await HerdrClient.listAllAgents()
-            fetched = result.agents
+            listed = result.agents
             // This Mac's server failing while a remote answers still leaves
             // agents to show, so it is an error line, not an early return.
             lastError = result.failures[.local]?.localizedDescription
@@ -396,12 +410,21 @@ public final class BridgeController: ObservableObject {
             remoteProblems = remoteProblemLines([:])
             return
         }
+        reconcileStatusStreams(listed)
+        refreshReviewPanes()
+        let fetched = BhoteReview.resolve(listed, reviewPanes: reviewPanes)
         agents = fetched
-        reconcileStatusStreams(fetched)
 
         // Day or night is decided per paint; the fingerprint carries the
         // brightness, so the poll repaints when the clock crosses the line.
         let config = self.config.lit()
+        let now = Date()
+        var since: [String: Date] = [:]
+        for agent in fetched where agent.status == "working" {
+            guard let key = agent.paneKey else { continue }
+            since[key] = workingSince[key] ?? now
+        }
+        workingSince = since
         let state = StatusMapper.aggregate(fetched, config)
         // Macro and voice keys share ids, so the binding decides each key's
         // light: configured text wins, the wide key falls back to voice.
@@ -422,7 +445,9 @@ public final class BridgeController: ObservableObject {
                         StatusMapper.tabCycleThread(config),
                         StatusMapper.landThread(open: landPanelOpen, config)]
             .filter { keyBindings.keepsBuiltInRole($0.id) }
-        let threads = (StatusMapper.threads(for: fetched, keys: keyBindings.agentKeys, config)
+        let threads = (StatusMapper.threads(
+            for: fetched, keys: keyBindings.agentKeys,
+            workingSince: fetched.map { $0.paneKey.flatMap { since[$0] } }, config)
             + builtIns
             + flexKeys)
             .map { bound.contains($0.id) ? boundThread($0.id, config) : $0 }
@@ -447,6 +472,24 @@ public final class BridgeController: ObservableObject {
             return StatusMapper.actionThread(id: key, action: action, config)
         }
         return StatusMapper.macroThread(id: key, config)
+    }
+
+    /// Asks bhote which agents wait on you, at most every few seconds and off
+    /// the main path. A change repaints.
+    private func refreshReviewPanes() {
+        guard !reviewFetching, Date().timeIntervalSince(reviewFetchedAt) > 4 else { return }
+        reviewFetching = true
+        let remotes = HerdrHosts.shared.remotes.compactMap(\.name)
+        Task { [weak self] in
+            let panes = await BhoteReview.fetch(remoteNames: remotes)
+            guard let self else { return }
+            self.reviewFetching = false
+            self.reviewFetchedAt = Date()
+            if let panes, panes != self.reviewPanes {
+                self.reviewPanes = panes
+                self.schedule()
+            }
+        }
     }
 
     /// The tunnel's own reason wins: "connection refused" on the local end of
@@ -477,7 +520,11 @@ public final class BridgeController: ObservableObject {
     private func apply(state: String?, threads: [OAI.Thread]) async {
         guard deviceConnected else { return }
         do {
-            _ = try await device.callAsync(OAI.methodThreads, params: OAI.threadsParams(threads))
+            let changed = threads.filter { sentThreads[$0.id] != $0 }
+            if !changed.isEmpty {
+                _ = try await device.callAsync(OAI.methodThreads, params: OAI.threadsParams(changed))
+                for thread in changed { sentThreads[thread.id] = thread }
+            }
             let config = self.config.lit()
             let zone = StatusMapper.zone(for: state, config) ?? .dark
             _ = try await device.callAsync(

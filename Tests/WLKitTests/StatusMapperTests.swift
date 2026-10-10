@@ -240,3 +240,64 @@ extension StatusMapperTests {
         XCTAssertEqual(thread.brightness, BridgeConfig().nightBrightness)
     }
 }
+
+extension StatusMapperTests {
+
+    func testWorkingAgentsStartedAtDifferentTimesBreatheAtDifferentPaces() {
+        let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
+        let threads = StatusMapper.threads(
+            for: [agent("working", pane: "a"), agent("working", pane: "b")],
+            workingSince: [t0, t0.addingTimeInterval(3)])
+        XCTAssertNotEqual(threads[0].speed, threads[1].speed)
+        for thread in threads.prefix(2) {
+            let ratio = (thread.speed ?? 0) / BridgeConfig().speed
+            XCTAssertEqual(ratio, 1, accuracy: 0.1)
+        }
+    }
+
+    func testBreathPaceIsStableForTheSameStart() {
+        let t = Date(timeIntervalSinceReferenceDate: 4_242)
+        XCTAssertEqual(StatusMapper.breathSpeed(base: 0.5, since: t),
+                       StatusMapper.breathSpeed(base: 0.5, since: t))
+    }
+}
+
+// MARK: - bhote review
+
+extension StatusMapperTests {
+
+    func testReviewTopicsMapToTheirPanesPerMachine() {
+        let json = Data("""
+        [{"status":"review","agent":{"machine":"Omarchy","pane":"w4:p1"}},
+         {"status":"review","agent":{"machine":"Mac","pane":"w3:p2"}},
+         {"status":"now","agent":{"machine":"Mac","pane":"wJ:p1"}},
+         {"status":"review","agent":null}]
+        """.utf8)
+        XCTAssertEqual(
+            BhoteReview.reviewPanes(from: json, remoteNames: ["omarchy"]),
+            ["omarchy|w4:p1", "|w3:p2"])
+    }
+
+    func testIdleAgentInReviewBecomesReviewButWorkingStaysWorking() {
+        let omarchy = HerdrHost(name: "omarchy", socketPath: "/x")
+        let agents = [
+            HerdrAgent(status: "idle", paneID: "w4:p1", host: omarchy),
+            HerdrAgent(status: "working", paneID: "w3:p2"),
+            HerdrAgent(status: "idle", paneID: "w4:p1"),
+        ]
+        let out = BhoteReview.resolve(agents, reviewPanes: ["omarchy|w4:p1", "|w3:p2"])
+        XCTAssertEqual(out.map(\.status), ["review", "working", "idle"],
+                       "pane ids repeat across machines, so the host decides")
+    }
+
+    func testReviewLooksLikeDoneAndOutranksIdle() {
+        let cfg = BridgeConfig()
+        XCTAssertEqual(cfg.color(for: "review"), cfg.color(for: "done"))
+        XCTAssertEqual(cfg.effect(for: "review"), .breath)
+        XCTAssertEqual(StatusMapper.aggregate([agent("idle"), agent("review")]), "review")
+    }
+
+    func testMalformedBhoteOutputYieldsNothing() {
+        XCTAssertTrue(BhoteReview.reviewPanes(from: Data("nope".utf8), remoteNames: []).isEmpty)
+    }
+}
