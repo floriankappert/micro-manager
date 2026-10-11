@@ -21,8 +21,8 @@ public struct BridgeConfig: Sendable {
         // quiet - so done is lit green and idle is dark.
         "done": 0x00C853,
         // Review is an idle agent that bhote has waiting on you (it asked a
-        // question). It is as pressing as done, so it looks the same.
-        "review": 0x00C853,
+        // question): red like blocked, since it needs an answer, but slower.
+        "review": 0xFF2D2D,
         "idle": 0x000000,
         "unknown": 0x000000,
     ]
@@ -55,7 +55,7 @@ public struct BridgeConfig: Sendable {
     public var speeds: [String: Double] = [
         "blocked": 0.8,
         "done": 0.25,
-        "review": 0.25,
+        "review": 0.5,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.

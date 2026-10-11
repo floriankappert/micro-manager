@@ -290,10 +290,11 @@ extension StatusMapperTests {
                        "pane ids repeat across machines, so the host decides")
     }
 
-    func testReviewLooksLikeDoneAndOutranksIdle() {
+    func testReviewBreathesRedSlowerThanBlockedAndOutranksIdle() {
         let cfg = BridgeConfig()
-        XCTAssertEqual(cfg.color(for: "review"), cfg.color(for: "done"))
+        XCTAssertEqual(cfg.color(for: "review"), cfg.color(for: "blocked"))
         XCTAssertEqual(cfg.effect(for: "review"), .breath)
+        XCTAssertLessThan(cfg.speed(for: "review"), cfg.speed(for: "blocked"))
         XCTAssertEqual(StatusMapper.aggregate([agent("idle"), agent("review")]), "review")
     }
 
