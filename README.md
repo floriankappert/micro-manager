@@ -41,7 +41,7 @@ them. A colour is a status, never an agent: red (blocked, breathing fast), orang
 (working, breathing at a medium pace) and green (done — finished but not yet looked at, breathing slowly).
 Idle and unknown keys are dark. Herdr distinguishes done from idle by whether
 you have focused the pane yet, so a breathing green key is waiting to be read
-and a dark one is quiet. An idle agent that bhote has in review (it asked you something) breathes red, slower than blocked. Without bhote, agents keep Herdr's own status. Lights run at full brightness; `BridgeConfig.nightBrightness` can dim them between 22:00 and 07:00. The **underglow**
+and a dark one is quiet. An idle agent that bhote has in review (it asked you something) breathes red, slower than blocked. One that bhote lists as finished (it stopped without asking) breathes green, faster than done. Without bhote, agents keep Herdr's own status. Lights run at full brightness; `BridgeConfig.nightBrightness` can dim them between 22:00 and 07:00. The **underglow**
 carries the worst state across all agents, so "does anything need me?" is
 readable from across the room.
 

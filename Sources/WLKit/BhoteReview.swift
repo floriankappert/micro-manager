@@ -12,24 +12,41 @@ import Foundation
 /// reported and agents keep Herdr's own status.
 public enum BhoteReview {
 
-    /// `paneKey`s (`HerdrAgent.paneKey`) of the agents whose topic is in review.
-    ///
+    /// The panes bhote has something to say about, as `HerdrAgent.paneKey`s.
+    public struct Panes: Equatable, Sendable {
+        /// The agent asked something: its topic is in review.
+        public var review: Set<String> = []
+        /// The agent stopped without a question: its topic is finished.
+        public var finished: Set<String> = []
+        public var isEmpty: Bool { review.isEmpty && finished.isEmpty }
+        public init(review: Set<String> = [], finished: Set<String> = []) {
+            self.review = review
+            self.finished = finished
+        }
+    }
+
     /// bhote names a machine by label ("Mac", "Omarchy"), Herdr by the remote's
     /// configured name. A label that matches a remote, ignoring case, is that
     /// remote; any other label is taken to be this Mac.
-    public static func reviewPanes(from json: Data, remoteNames: [String]) -> Set<String> {
+    public static func panes(from json: Data, remoteNames: [String]) -> Panes {
         guard let topics = (try? JSONSerialization.jsonObject(with: json)) as? [[String: Any]]
-        else { return [] }
-        var keys: Set<String> = []
-        for topic in topics where topic["status"] as? String == "review" {
-            guard let agent = topic["agent"] as? [String: Any],
+        else { return Panes() }
+        var panes = Panes()
+        for topic in topics {
+            let status = topic["status"] as? String
+            guard status == "review" || status == "finished",
+                  let agent = topic["agent"] as? [String: Any],
                   let pane = agent["pane"] as? String, !pane.isEmpty
             else { continue }
             let label = (agent["machine"] as? String ?? "").lowercased()
             let host = remoteNames.first { $0.lowercased() == label } ?? ""
-            keys.insert("\(host)|\(pane)")
+            if status == "review" {
+                panes.review.insert("\(host)|\(pane)")
+            } else {
+                panes.finished.insert("\(host)|\(pane)")
+            }
         }
-        return keys
+        return panes
     }
 
     /// Where bhote usually lives. An app started from the Dock has no shell
@@ -41,7 +58,7 @@ public enum BhoteReview {
     }
 
     /// Runs `bhote list --json`; nil when bhote is missing, slow or failing.
-    public static func fetch(remoteNames: [String], timeout: TimeInterval = 4) async -> Set<String>? {
+    public static func fetch(remoteNames: [String], timeout: TimeInterval = 4) async -> Panes? {
         guard let path = executable else { return nil }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -58,20 +75,26 @@ public enum BhoteReview {
                 process.waitUntilExit()
                 killer.cancel()
                 guard process.terminationStatus == 0 else { return continuation.resume(returning: nil) }
-                continuation.resume(returning: reviewPanes(from: data, remoteNames: remoteNames))
+                continuation.resume(returning: panes(from: data, remoteNames: remoteNames))
             }
         }
     }
 
-    /// Herdr's `idle` agents that bhote has in review become `review`. A
-    /// working or blocked agent keeps its status: it is not waiting any more.
-    public static func resolve(_ agents: [HerdrAgent], reviewPanes: Set<String>) -> [HerdrAgent] {
-        guard !reviewPanes.isEmpty else { return agents }
+    /// Herdr's `idle` agents that bhote has in review become `review`, those
+    /// with a finished topic `finished`. A working or blocked agent keeps its
+    /// status: it is not waiting any more.
+    public static func resolve(_ agents: [HerdrAgent], panes: Panes) -> [HerdrAgent] {
+        guard !panes.isEmpty else { return agents }
         return agents.map { agent in
-            guard agent.status == "idle", let key = agent.paneKey, reviewPanes.contains(key)
-            else { return agent }
+            guard agent.status == "idle", let key = agent.paneKey else { return agent }
             var copy = agent
-            copy.status = "review"
+            if panes.review.contains(key) {
+                copy.status = "review"
+            } else if panes.finished.contains(key) {
+                copy.status = "finished"
+            } else {
+                return agent
+            }
             return copy
         }
     }

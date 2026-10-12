@@ -210,11 +210,11 @@ extension StatusMapperTests {
         XCTAssertEqual(listening.effect, .breath)
     }
 
-    func testReturnKeyIsSteadyBlueAndOtherActionsStayQuiet() {
+    func testReturnKeyIsAlwaysDarkAndOtherActionsStayQuiet() {
         let enter = StatusMapper.actionThread(id: 10, action: .enter)
-        XCTAssertEqual(enter.color, 0x00B0FF)
-        XCTAssertEqual(enter.effect, .solid)
-        XCTAssertEqual(enter.brightness, BridgeConfig().brightness)
+        XCTAssertEqual(enter.effect, .off)
+        XCTAssertEqual(enter.brightness, 0)
+        XCTAssertNil(enter.color)
         let back = StatusMapper.actionThread(id: 9, action: .backspace)
         XCTAssertEqual(back.color, BridgeConfig().macroColor)
     }
@@ -274,7 +274,7 @@ extension StatusMapperTests {
          {"status":"review","agent":null}]
         """.utf8)
         XCTAssertEqual(
-            BhoteReview.reviewPanes(from: json, remoteNames: ["omarchy"]),
+            BhoteReview.panes(from: json, remoteNames: ["omarchy"]).review,
             ["omarchy|w4:p1", "|w3:p2"])
     }
 
@@ -285,7 +285,7 @@ extension StatusMapperTests {
             HerdrAgent(status: "working", paneID: "w3:p2"),
             HerdrAgent(status: "idle", paneID: "w4:p1"),
         ]
-        let out = BhoteReview.resolve(agents, reviewPanes: ["omarchy|w4:p1", "|w3:p2"])
+        let out = BhoteReview.resolve(agents, panes: .init(review: ["omarchy|w4:p1", "|w3:p2"]))
         XCTAssertEqual(out.map(\.status), ["review", "working", "idle"],
                        "pane ids repeat across machines, so the host decides")
     }
@@ -299,6 +299,33 @@ extension StatusMapperTests {
     }
 
     func testMalformedBhoteOutputYieldsNothing() {
-        XCTAssertTrue(BhoteReview.reviewPanes(from: Data("nope".utf8), remoteNames: []).isEmpty)
+        XCTAssertTrue(BhoteReview.panes(from: Data("nope".utf8), remoteNames: []).isEmpty)
+    }
+}
+
+extension StatusMapperTests {
+
+    func testFinishedTopicsMakeIdleAgentsFinishedAndReviewWins() {
+        let json = Data("""
+        [{"status":"finished","agent":{"machine":"Mac","pane":"wJ:p1"}},
+         {"status":"finished","agent":{"machine":"Mac","pane":"wK:p1"}},
+         {"status":"review","agent":{"machine":"Mac","pane":"wK:p1"}}]
+        """.utf8)
+        let panes = BhoteReview.panes(from: json, remoteNames: [])
+        XCTAssertEqual(panes.finished, ["|wJ:p1", "|wK:p1"])
+        let out = BhoteReview.resolve([
+            HerdrAgent(status: "idle", paneID: "wJ:p1"),
+            HerdrAgent(status: "idle", paneID: "wK:p1"),
+            HerdrAgent(status: "working", paneID: "wJ:p1"),
+        ], panes: panes)
+        XCTAssertEqual(out.map(\.status), ["finished", "review", "working"])
+    }
+
+    func testFinishedIsGreenAndQuickerThanDone() {
+        let cfg = BridgeConfig()
+        XCTAssertEqual(cfg.color(for: "finished"), 0x00C853)
+        XCTAssertEqual(cfg.effect(for: "finished"), .breath)
+        XCTAssertGreaterThan(cfg.speed(for: "finished"), cfg.speed(for: "done"))
+        XCTAssertEqual(StatusMapper.aggregate([agent("done"), agent("finished")]), "finished")
     }
 }

@@ -103,7 +103,7 @@ public final class BridgeController: ObservableObject {
     private var sentThreads: [Int: OAI.Thread] = [:]
     /// Panes whose bhote topic is in review, refreshed in the background so a
     /// slow bhote never holds up a repaint.
-    private var reviewPanes: Set<String> = []
+    private var bhotePanes = BhoteReview.Panes()
     private var reviewFetchedAt = Date.distantPast
     private var reviewFetching = false
     /// When each agent was first seen working, by `HerdrAgent.paneKey`.
@@ -412,7 +412,7 @@ public final class BridgeController: ObservableObject {
         }
         reconcileStatusStreams(listed)
         refreshReviewPanes()
-        let fetched = BhoteReview.resolve(listed, reviewPanes: reviewPanes)
+        let fetched = BhoteReview.resolve(listed, panes: bhotePanes)
         agents = fetched
 
         // Day or night is decided per paint; the fingerprint carries the
@@ -485,8 +485,8 @@ public final class BridgeController: ObservableObject {
             guard let self else { return }
             self.reviewFetching = false
             self.reviewFetchedAt = Date()
-            if let panes, panes != self.reviewPanes {
-                self.reviewPanes = panes
+            if let panes, panes != self.bhotePanes {
+                self.bhotePanes = panes
                 self.schedule()
             }
         }

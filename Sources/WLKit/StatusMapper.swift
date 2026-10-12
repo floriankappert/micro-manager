@@ -11,7 +11,7 @@ import SwiftUI
 public struct BridgeConfig: Sendable {
     /// Highest priority first: the first state present across all agents wins
     /// the underglow.
-    public var priority: [String] = ["blocked", "working", "review", "done", "idle", "unknown"]
+    public var priority: [String] = ["blocked", "working", "review", "finished", "done", "idle", "unknown"]
     public var colors: [String: Int] = [
         "blocked": 0xFF2D2D,
         "working": 0xFF6A00,
@@ -23,6 +23,10 @@ public struct BridgeConfig: Sendable {
         // Review is an idle agent that bhote has waiting on you (it asked a
         // question): red like blocked, since it needs an answer, but slower.
         "review": 0xFF2D2D,
+        // Finished is an idle agent that bhote has stopped without a
+        // question. Green, and quick, so it reads apart from done's slow
+        // breath. The pad has no blink effect; this is the nearest thing.
+        "finished": 0x00C853,
         "idle": 0x000000,
         "unknown": 0x000000,
     ]
@@ -32,6 +36,7 @@ public struct BridgeConfig: Sendable {
         "idle": .off,
         "done": .breath,
         "review": .breath,
+        "finished": .breath,
         "unknown": .off,
     ]
     /// Where the underglow differs from the keys: it lights the whole pad, so
@@ -46,6 +51,7 @@ public struct BridgeConfig: Sendable {
         "blocked": 1,
         "done": 1,
         "review": 1,
+        "finished": 1,
         "working": 0.8,
         "idle": 0,
         "unknown": 0,
@@ -56,6 +62,7 @@ public struct BridgeConfig: Sendable {
         "blocked": 0.8,
         "done": 0.25,
         "review": 0.5,
+        "finished": 0.8,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.
@@ -69,8 +76,6 @@ public struct BridgeConfig: Sendable {
     /// The voice key is always red: lit steadily at rest, breathing while
     /// Whisper is listening.
     public var voiceColor: Int = 0xFF3B30
-    /// The return key: blue, lit steadily like the voice key.
-    public var enterColor: Int = 0x00B0FF
     /// Text-macro keys: a quiet steel blue — bound, but not status-bearing.
     public var macroColor: Int = 0x90A4AE
     /// Master level for every light on the pad, keys and underglow alike, by
@@ -225,21 +230,16 @@ public enum StatusMapper {
         )
     }
 
-    /// A key that sends a keystroke: the return key is lit steadily in blue,
-    /// any other action is as quiet as a macro.
+    /// A key that sends a keystroke. The return key is always dark - the
+    /// pad wears a black cover over it - and any other action is as quiet as
+    /// a macro.
     public static func actionThread(
         id: Int,
         action: KeyBindings.Action,
         _ cfg: BridgeConfig = BridgeConfig()
     ) -> OAI.Thread {
         guard action == .enter else { return macroThread(id: id, cfg) }
-        return OAI.Thread(
-            id: id,
-            color: cfg.enterColor,
-            brightness: cfg.brightness,
-            effect: .solid,
-            speed: cfg.speed
-        )
+        return OAI.Thread(id: id, brightness: 0, effect: .off)
     }
 
     /// A text-macro key's thread: dimly lit so it reads as bound, in a colour
