@@ -51,11 +51,19 @@ public struct BridgeConfig: Sendable {
         "finished": .solid,
         "unknown": .off,
     ]
-    /// Where the underglow differs from the keys. Nothing does any more: only
-    /// testing and deploying breathe, on the keys and the underglow alike.
+    /// The underglow is the pad's base light: it always breathes, as slowly
+    /// as the firmware allows (`speed` is a float in 0...1), whatever the keys do.
     public var zoneEffects: [String: OAI.Effect] = [
-        "working": .solid,
+        "blocked": .breath,
+        "working": .breath,
+        "testing": .breath,
+        "deploying": .breath,
+        "review": .breath,
+        "finished": .breath,
+        "done": .breath,
+        "offline": .breath,
     ]
+    public var zoneSpeed: Double = 0.02
     /// Brightness relative to `brightness`: what needs you is full, and what
     /// is calm (idle) or unknown is dark.
     public var brightnesses: [String: Double] = [
@@ -278,7 +286,7 @@ public enum StatusMapper {
         return OAI.Zone(
             effect: cfg.zoneEffects[state] ?? cfg.effect(for: state),
             brightness: cfg.brightness(for: state),
-            speed: cfg.speed(for: state),
+            speed: cfg.zoneSpeed,
             magic: 1,
             color: cfg.color(for: state)
         )

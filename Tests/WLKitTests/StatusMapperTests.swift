@@ -46,10 +46,14 @@ final class StatusMapperTests: XCTestCase {
         XCTAssertEqual(StatusMapper.threads(for: [agent("working")])[0].effect, .solid)
     }
 
-    func testUnderglowStaysSteadyWhileWorking() {
-        XCTAssertEqual(StatusMapper.zone(for: "working")?.effect, .solid)
+    func testUnderglowAlwaysBreathesAsSlowlyAsPossible() {
+        for state in ["working", "blocked", "testing", "finished"] {
+            let zone = StatusMapper.zone(for: state)
+            XCTAssertEqual(zone?.effect, .breath, state)
+            XCTAssertEqual(zone?.speed, BridgeConfig().zoneSpeed, state)
+        }
         XCTAssertEqual(StatusMapper.zone(for: "working")?.color, 0xFFA000)
-        XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .solid)
+        XCTAssertLessThan(BridgeConfig().zoneSpeed, 0.05)
     }
 
     // MARK: - Per-key
