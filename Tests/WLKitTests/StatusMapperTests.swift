@@ -321,7 +321,7 @@ extension StatusMapperTests {
         XCTAssertEqual(StatusMapper.aggregate([agent("done"), agent("finished")]), "finished")
     }
 
-    func testTestingTopicOverridesIdleAndDoneButNotWorking() {
+    func testTestingTopicOverridesEverythingButBlocked() {
         let json = #"[{"status":"testing","agent":{"machine":"Mac","pane":"wJ:p1"}}]"#.data(using: .utf8)!
         let panes = BhoteReview.panes(from: json, remoteNames: [])
         XCTAssertEqual(panes.testing, ["|wJ:p1"])
@@ -329,8 +329,9 @@ extension StatusMapperTests {
             HerdrAgent(status: "idle", paneID: "wJ:p1"),
             HerdrAgent(status: "done", paneID: "wJ:p1"),
             HerdrAgent(status: "working", paneID: "wJ:p1"),
+            HerdrAgent(status: "blocked", paneID: "wJ:p1"),
         ], panes: panes)
-        XCTAssertEqual(out.map(\.status), ["testing", "testing", "working"])
+        XCTAssertEqual(out.map(\.status), ["testing", "testing", "testing", "blocked"])
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "testing"), 0xFF5A00)
         XCTAssertEqual(cfg.effect(for: "testing"), .breath)

@@ -99,18 +99,23 @@ public enum BhoteReview {
 
     /// Herdr's `idle` agents that bhote has in review become `review`, those
     /// with a finished topic `finished`. An agent whose tests run is `testing`
-    /// whether Herdr calls it `idle` or `done`; one whose topic waits for a
+    /// whether Herdr calls it `idle`, `done` or `working`; one whose topic waits for a
     /// deployment is `deploying`. A working or blocked agent
     /// keeps its status: it is not waiting any more.
     public static func resolve(_ agents: [HerdrAgent], panes: Panes) -> [HerdrAgent] {
         guard !panes.isEmpty else { return agents }
         return agents.map { agent in
-            guard agent.status == "idle" || agent.status == "done",
-                  let key = agent.paneKey else { return agent }
+            guard let key = agent.paneKey else { return agent }
             var copy = agent
-            if panes.testing.contains(key) {
+            // Tests running under a topic are what the panel shows, even
+            // while Herdr still calls the agent `working`. Only a blocked
+            // agent keeps its status: it needs you whatever else runs.
+            if panes.testing.contains(key), agent.status != "blocked" {
                 copy.status = "testing"
-            } else if agent.status != "idle" {
+                return copy
+            }
+            guard agent.status == "idle" || agent.status == "done" else { return agent }
+            if agent.status != "idle" {
                 return agent
             } else if panes.review.contains(key) {
                 copy.status = "review"
