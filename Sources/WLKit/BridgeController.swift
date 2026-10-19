@@ -49,7 +49,7 @@ public final class BridgeController: ObservableObject {
     /// Same for the land window.
     @Published public private(set) var landPanelOpen = false
     /// Whether a Claude voice take is open, for the voice key's light.
-    @Published public private(set) var voiceActive = false
+    @Published public private(set) var voiceState = VoiceState.waiting
 
     public var config: BridgeConfig
     /// Text macros for the spare keys, reloaded on every bridge start so a
@@ -433,7 +433,7 @@ public final class BridgeController: ObservableObject {
                 return boundThread(key, config)
             }
             if keyBindings.voiceKeys.contains(key) {
-                return StatusMapper.voiceThread(id: key, config)
+                return StatusMapper.voiceThread(id: key, state: voiceState, config)
             }
             return OAI.Thread(id: key, brightness: 0, effect: .off)
         }
@@ -620,9 +620,9 @@ public final class BridgeController: ObservableObject {
     }
 
     /// Repaints the voice key. Same contract as `setStackPanelOpen`.
-    public func setVoiceActive(_ active: Bool) async {
-        guard voiceActive != active else { return }
-        voiceActive = active
+    public func setVoiceState(_ state: VoiceState) async {
+        guard voiceState != state else { return }
+        voiceState = state
         await forceRepaint()
     }
 

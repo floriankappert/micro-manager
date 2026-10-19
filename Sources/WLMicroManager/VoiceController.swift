@@ -1,4 +1,5 @@
 import AppKit
+import WLKit
 
 /// The wide bottom key: taps **right command**, which is Superwhisper's
 /// start/stop.
@@ -23,20 +24,32 @@ final class VoiceController {
     /// distinguishes them, so this must be the right-hand one.
     static let triggerKey: CGKeyCode = 0x36
 
-    /// Mirrors an open take, for the key light.
-    var onActiveChange: ((Bool) -> Void)?
+    /// Superwhisper's state, for the key light. It has no API, so `start()`
+    /// watches its recordings folder instead of trusting
+    /// how often the key was pressed.
+    var onStateChange: ((VoiceState) -> Void)?
     var onError: ((String) -> Void)?
 
-    /// Which half of the start/stop cycle we are in. Only the light cares —
-    /// stopping a take from the keyboard makes this drift, and the next press
-    /// resynchronises it.
-    private var takeOpen = false
+    private var state = VoiceState.waiting
+    private var timer: Timer?
+
+    func start() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+    }
+
+    private func poll() {
+        let next = Superwhisper.state(newest: Superwhisper.newestTake())
+        guard next != state else { return }
+        state = next
+        onStateChange?(next)
+    }
 
     func handleVoiceKey() {
         do {
             try tapTriggerKey()
-            takeOpen.toggle()
-            onActiveChange?(takeOpen)
         } catch {
             onError?(error.localizedDescription)
         }

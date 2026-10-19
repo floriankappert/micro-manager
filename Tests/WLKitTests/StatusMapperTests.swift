@@ -197,11 +197,31 @@ extension StatusMapperTests {
 
 extension StatusMapperTests {
 
-    func testVoiceKeyIsAlwaysSteadyPurple() {
-        let voice = StatusMapper.voiceThread(id: 12)
-        XCTAssertEqual(voice.color, 0xAA00FF)
-        XCTAssertEqual(voice.effect, .solid)
-        XCTAssertEqual(voice.brightness, BridgeConfig().brightness)
+    func testVoiceKeyIsPurpleSteadyWhenWaitingAndBreathesFasterWhenProcessing() {
+        let waiting = StatusMapper.voiceThread(id: 12, state: .waiting)
+        let listening = StatusMapper.voiceThread(id: 12, state: .listening)
+        let processing = StatusMapper.voiceThread(id: 12, state: .processing)
+        for thread in [waiting, listening, processing] {
+            XCTAssertEqual(thread.color, 0xAA00FF)
+        }
+        XCTAssertEqual(waiting.effect, .solid)
+        XCTAssertEqual(listening.effect, .breath)
+        XCTAssertEqual(processing.effect, .breath)
+        XCTAssertGreaterThan(processing.speed ?? 0, listening.speed ?? 0)
+    }
+
+    func testSuperwhisperStateFollowsTheAudioAndTheTakeResult() {
+        let now = Date()
+        func take(_ age: TimeInterval, result: Bool = false) -> Superwhisper.Take {
+            .init(audioModified: now.addingTimeInterval(-age), hasResult: result)
+        }
+        XCTAssertEqual(Superwhisper.state(newest: take(0.5), now: now), .listening)
+        XCTAssertEqual(Superwhisper.state(newest: take(5), now: now), .processing)
+        XCTAssertEqual(Superwhisper.state(newest: take(5, result: true), now: now), .waiting)
+        XCTAssertEqual(Superwhisper.state(newest: take(0.5, result: true), now: now), .waiting)
+        XCTAssertEqual(Superwhisper.state(newest: take(300), now: now), .waiting,
+                       "a cancelled take does not process for ever")
+        XCTAssertEqual(Superwhisper.state(newest: nil, now: now), .waiting)
     }
 
     func testReturnKeyIsAlwaysDarkAndOtherActionsStayQuiet() {

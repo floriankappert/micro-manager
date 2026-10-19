@@ -41,13 +41,14 @@ struct MicroManagerApp: App {
                     bridge.onLandKey = { land.handleLandKey() }
 
                     let voice = VoiceController.shared
-                    voice.onActiveChange = { [weak bridge] active in
-                        Task { await bridge?.setVoiceActive(active) }
+                    voice.onStateChange = { [weak bridge] state in
+                        Task { await bridge?.setVoiceState(state) }
                     }
                     voice.onError = { [weak bridge] message in
                         bridge?.noteError(message)
                     }
                     bridge.onVoiceKey = { voice.handleVoiceKey() }
+                    voice.start()
 
                     let tune = TuneController.shared
                     tune.onError = { [weak bridge] message in

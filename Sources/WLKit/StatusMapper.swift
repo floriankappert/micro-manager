@@ -84,8 +84,11 @@ public struct BridgeConfig: Sendable {
     /// The land key pushes to the target, so it gets a colour with some weight
     /// to it — distinct from blocked-red, which means "look", not "beware".
     public var landColor: Int = 0xE91E63
-    /// The voice key is always a steady purple, listening or not.
+    /// The voice key is purple. Waiting for input it is steady, listening it
+    /// breathes slowly and processing it breathes fast.
     public var voiceColor: Int = 0xAA00FF
+    public var voiceListeningSpeed: Double = 0.3
+    public var voiceProcessingSpeed: Double = 0.9
     /// Text-macro keys: a quiet steel blue — bound, but not status-bearing.
     public var macroColor: Int = 0x90A4AE
     /// Master level for every light on the pad, keys and underglow alike, by
@@ -228,17 +231,20 @@ public enum StatusMapper {
     }
 
     /// One half of the voice key — the callers paint both matrix positions
-    /// identically so the single wide keycap reads as one light. Steady purple.
+    /// identically so the single wide keycap reads as one light. Purple:
+    /// steady while waiting for input, a slow breath while listening and a
+    /// fast one while the take is processed.
     public static func voiceThread(
         id: Int,
+        state: VoiceState = .waiting,
         _ cfg: BridgeConfig = BridgeConfig()
     ) -> OAI.Thread {
         OAI.Thread(
             id: id,
             color: cfg.voiceColor,
             brightness: cfg.brightness,
-            effect: .solid,
-            speed: cfg.speed
+            effect: state == .waiting ? .solid : .breath,
+            speed: state == .processing ? cfg.voiceProcessingSpeed : cfg.voiceListeningSpeed
         )
     }
 
