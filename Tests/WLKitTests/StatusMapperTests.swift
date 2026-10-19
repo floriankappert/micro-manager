@@ -350,4 +350,14 @@ extension StatusMapperTests {
         XCTAssertEqual(cfg.effect(for: "off-blocked"), .solid)
         XCTAssertLessThan(cfg.brightness(for: "off-working"), cfg.brightness(for: "working"))
     }
+
+    func testIdleAgentUnderANowTopicCountsAsFinishedLikeBhotesPanel() {
+        let json = #"[{"status":"now","agent":{"machine":"Mac","pane":"wJ:p1"}}]"#.data(using: .utf8)!
+        let panes = BhoteReview.panes(from: json, remoteNames: [])
+        let out = BhoteReview.resolve([
+            HerdrAgent(status: "idle", paneID: "wJ:p1"),
+            HerdrAgent(status: "working", paneID: "wJ:p1"),
+        ], panes: panes)
+        XCTAssertEqual(out.map(\.status), ["finished", "working"])
+    }
 }

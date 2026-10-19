@@ -20,11 +20,15 @@ public enum BhoteReview {
         public var finished: Set<String> = []
         /// The agent stopped while a test suite runs: its topic is testing.
         public var testing: Set<String> = []
-        public var isEmpty: Bool { review.isEmpty && finished.isEmpty && testing.isEmpty }
-        public init(review: Set<String> = [], finished: Set<String> = [], testing: Set<String> = []) {
+        /// The topic is still `now`. An agent that has stopped under such a
+        /// topic is finished, which is how bhote's panel lists it too.
+        public var now: Set<String> = []
+        public var isEmpty: Bool { review.isEmpty && finished.isEmpty && testing.isEmpty && now.isEmpty }
+        public init(review: Set<String> = [], finished: Set<String> = [], testing: Set<String> = [], now: Set<String> = []) {
             self.review = review
             self.finished = finished
             self.testing = testing
+            self.now = now
         }
     }
 
@@ -37,7 +41,7 @@ public enum BhoteReview {
         var panes = Panes()
         for topic in topics {
             let status = topic["status"] as? String
-            guard status == "review" || status == "finished" || status == "testing",
+            guard status == "review" || status == "finished" || status == "testing" || status == "now",
                   let agent = topic["agent"] as? [String: Any],
                   let pane = agent["pane"] as? String, !pane.isEmpty
             else { continue }
@@ -47,6 +51,7 @@ public enum BhoteReview {
             switch status {
             case "review": panes.review.insert(key)
             case "testing": panes.testing.insert(key)
+            case "now": panes.now.insert(key)
             default: panes.finished.insert(key)
             }
         }
@@ -100,7 +105,7 @@ public enum BhoteReview {
                 return agent
             } else if panes.review.contains(key) {
                 copy.status = "review"
-            } else if panes.finished.contains(key) {
+            } else if panes.finished.contains(key) || panes.now.contains(key) {
                 copy.status = "finished"
             } else {
                 return agent
