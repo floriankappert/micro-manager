@@ -115,13 +115,13 @@ public enum BhoteReview {
                 return copy
             }
             guard agent.status == "idle" || agent.status == "done" else { return agent }
-            if agent.status != "idle" {
-                return agent
-            } else if panes.review.contains(key) {
+            // `done` is already lit green; only a deployment changes it.
+            let idle = agent.status == "idle"
+            if idle && panes.review.contains(key) {
                 copy.status = "review"
             } else if panes.deploying.contains(key) {
                 copy.status = "deploying"
-            } else if panes.finished.contains(key) || panes.now.contains(key) {
+            } else if idle && (panes.finished.contains(key) || panes.now.contains(key)) {
                 copy.status = "finished"
             } else {
                 return agent

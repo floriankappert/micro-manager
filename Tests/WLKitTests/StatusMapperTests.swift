@@ -362,8 +362,9 @@ extension StatusMapperTests {
             HerdrAgent(status: "idle", paneID: "wJ:p1"),
             HerdrAgent(status: "idle", paneID: "wK:p1"),
             HerdrAgent(status: "working", paneID: "wJ:p1"),
+            HerdrAgent(status: "done", paneID: "wJ:p1"),
         ], panes: panes)
-        XCTAssertEqual(out.map(\.status), ["deploying", "idle", "working"])
+        XCTAssertEqual(out.map(\.status), ["deploying", "idle", "working", "deploying"])
         let cfg = BridgeConfig()
         let colors = [cfg.color(for: "working"), cfg.color(for: "testing"), cfg.color(for: "deploying")]
         XCTAssertEqual(Set(colors).count, 3)
