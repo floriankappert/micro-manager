@@ -11,28 +11,35 @@ import SwiftUI
 public struct BridgeConfig: Sendable {
     /// Highest priority first: the first state present across all agents wins
     /// the underglow.
-    public var priority: [String] = ["blocked", "working", "review", "finished", "done", "idle", "unknown"]
+    public var priority: [String] = ["blocked", "working", "testing", "review", "finished", "done", "idle", "unknown"]
     public var colors: [String: Int] = [
         "blocked": 0xFF2D2D,
         "working": 0xFF6A00,
+        // Bhote's own roles, in LED-strength versions of the same hues
+        // (pastels wash out to white on an LED): testing is its peach/yellow
+        // `C`, review its blue, offline its muted grey.
+        "testing": 0xFFB300,
         // Herdr reports "done" for an agent that has finished and that you
         // have not looked at yet, and "idle" once it is focused. That is a
         // real difference - one is waiting to be read, the other is just
         // quiet - so done is lit green and idle is dark.
         "done": 0x00C853,
         // Review is an idle agent that bhote has waiting on you (it asked a
-        // question): red like blocked, since it needs an answer, but slower.
-        "review": 0xFF2D2D,
+        // question): blue, as in bhote's panel.
+        "review": 0x2979FF,
         // Finished is an idle agent that bhote has stopped without a
         // question. Green, and quick, so it reads apart from done's slow
         // breath. The pad has no blink effect; this is the nearest thing.
         "finished": 0x00C853,
         "idle": 0x000000,
+        "offline": 0x607080,
         "unknown": 0x000000,
     ]
     public var effects: [String: OAI.Effect] = [
         "blocked": .breath,
         "working": .breath,
+        "testing": .breath,
+        "offline": .solid,
         "idle": .off,
         "done": .breath,
         "review": .breath,
@@ -53,16 +60,18 @@ public struct BridgeConfig: Sendable {
         "review": 1,
         "finished": 1,
         "working": 0.8,
+        "testing": 0.8,
+        "offline": 0.25,
         "idle": 0,
         "unknown": 0,
     ]
     /// Breathing pace: urgent is quick, "finished, read me" is slow, and
     /// working sits between at the default.
     public var speeds: [String: Double] = [
-        "blocked": 0.8,
-        "done": 0.25,
-        "review": 0.5,
-        "finished": 0.8,
+        "blocked": 0.35,
+        "done": 0.12,
+        "review": 0.2,
+        "finished": 0.35,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.
@@ -86,7 +95,7 @@ public struct BridgeConfig: Sendable {
     /// midnight.
     public var nightStartHour = 22
     public var nightEndHour = 7
-    public var speed: Double = 0.5
+    public var speed: Double = 0.2
     /// Leave the key-backlight ZONE alone: keys are painted per-agent instead,
     /// and a zone colour would only compete with them.
     public var driveBacklight = false
@@ -115,7 +124,11 @@ public struct BridgeConfig: Sendable {
 
     /// A status Herdr invents later reads as `unknown`, i.e. dark, rather
     /// than borrowing some other state's look.
-    private func known(_ state: String) -> String { colors[state] == nil ? "unknown" : state }
+    /// Bhote marks an agent on a machine that is reconnecting as `off-<status>`.
+    private func known(_ state: String) -> String {
+        if state.hasPrefix("off-") { return "offline" }
+        return colors[state] == nil ? "unknown" : state
+    }
 
     public func color(for state: String) -> Int { colors[known(state)] ?? 0 }
     public func effect(for state: String) -> OAI.Effect { effects[known(state)] ?? .off }

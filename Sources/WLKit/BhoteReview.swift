@@ -18,10 +18,13 @@ public enum BhoteReview {
         public var review: Set<String> = []
         /// The agent stopped without a question: its topic is finished.
         public var finished: Set<String> = []
-        public var isEmpty: Bool { review.isEmpty && finished.isEmpty }
-        public init(review: Set<String> = [], finished: Set<String> = []) {
+        /// The agent stopped while a test suite runs: its topic is testing.
+        public var testing: Set<String> = []
+        public var isEmpty: Bool { review.isEmpty && finished.isEmpty && testing.isEmpty }
+        public init(review: Set<String> = [], finished: Set<String> = [], testing: Set<String> = []) {
             self.review = review
             self.finished = finished
+            self.testing = testing
         }
     }
 
@@ -34,16 +37,17 @@ public enum BhoteReview {
         var panes = Panes()
         for topic in topics {
             let status = topic["status"] as? String
-            guard status == "review" || status == "finished",
+            guard status == "review" || status == "finished" || status == "testing",
                   let agent = topic["agent"] as? [String: Any],
                   let pane = agent["pane"] as? String, !pane.isEmpty
             else { continue }
             let label = (agent["machine"] as? String ?? "").lowercased()
             let host = remoteNames.first { $0.lowercased() == label } ?? ""
-            if status == "review" {
-                panes.review.insert("\(host)|\(pane)")
-            } else {
-                panes.finished.insert("\(host)|\(pane)")
+            let key = "\(host)|\(pane)"
+            switch status {
+            case "review": panes.review.insert(key)
+            case "testing": panes.testing.insert(key)
+            default: panes.finished.insert(key)
             }
         }
         return panes
@@ -81,14 +85,20 @@ public enum BhoteReview {
     }
 
     /// Herdr's `idle` agents that bhote has in review become `review`, those
-    /// with a finished topic `finished`. A working or blocked agent keeps its
-    /// status: it is not waiting any more.
+    /// with a finished topic `finished`. An agent whose tests run is `testing`
+    /// whether Herdr calls it `idle` or `done`. A working or blocked agent
+    /// keeps its status: it is not waiting any more.
     public static func resolve(_ agents: [HerdrAgent], panes: Panes) -> [HerdrAgent] {
         guard !panes.isEmpty else { return agents }
         return agents.map { agent in
-            guard agent.status == "idle", let key = agent.paneKey else { return agent }
+            guard agent.status == "idle" || agent.status == "done",
+                  let key = agent.paneKey else { return agent }
             var copy = agent
-            if panes.review.contains(key) {
+            if panes.testing.contains(key) {
+                copy.status = "testing"
+            } else if agent.status != "idle" {
+                return agent
+            } else if panes.review.contains(key) {
                 copy.status = "review"
             } else if panes.finished.contains(key) {
                 copy.status = "finished"

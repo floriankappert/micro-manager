@@ -292,7 +292,7 @@ extension StatusMapperTests {
 
     func testReviewBreathesRedSlowerThanBlockedAndOutranksIdle() {
         let cfg = BridgeConfig()
-        XCTAssertEqual(cfg.color(for: "review"), cfg.color(for: "blocked"))
+        XCTAssertEqual(cfg.color(for: "review"), 0x2979FF)
         XCTAssertEqual(cfg.effect(for: "review"), .breath)
         XCTAssertLessThan(cfg.speed(for: "review"), cfg.speed(for: "blocked"))
         XCTAssertEqual(StatusMapper.aggregate([agent("idle"), agent("review")]), "review")
@@ -327,5 +327,27 @@ extension StatusMapperTests {
         XCTAssertEqual(cfg.effect(for: "finished"), .breath)
         XCTAssertGreaterThan(cfg.speed(for: "finished"), cfg.speed(for: "done"))
         XCTAssertEqual(StatusMapper.aggregate([agent("done"), agent("finished")]), "finished")
+    }
+
+    func testTestingTopicOverridesIdleAndDoneButNotWorking() {
+        let json = #"[{"status":"testing","agent":{"machine":"Mac","pane":"wJ:p1"}}]"#.data(using: .utf8)!
+        let panes = BhoteReview.panes(from: json, remoteNames: [])
+        XCTAssertEqual(panes.testing, ["|wJ:p1"])
+        let out = BhoteReview.resolve([
+            HerdrAgent(status: "idle", paneID: "wJ:p1"),
+            HerdrAgent(status: "done", paneID: "wJ:p1"),
+            HerdrAgent(status: "working", paneID: "wJ:p1"),
+        ], panes: panes)
+        XCTAssertEqual(out.map(\.status), ["testing", "testing", "working"])
+        let cfg = BridgeConfig()
+        XCTAssertEqual(cfg.color(for: "testing"), 0xFFB300)
+        XCTAssertEqual(cfg.effect(for: "testing"), .breath)
+    }
+
+    func testOfflineAgentIsDimGreyWhateverItWasDoing() {
+        let cfg = BridgeConfig()
+        XCTAssertEqual(cfg.color(for: "off-working"), 0x607080)
+        XCTAssertEqual(cfg.effect(for: "off-blocked"), .solid)
+        XCTAssertLessThan(cfg.brightness(for: "off-working"), cfg.brightness(for: "working"))
     }
 }
