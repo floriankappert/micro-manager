@@ -370,4 +370,15 @@ extension StatusMapperTests {
         XCTAssertEqual(Set(colors).count, 3)
         XCTAssertEqual(cfg.color(for: "deploying"), 0xFFE600)
     }
+
+    func testReviewTopicShowsADoneAgentAsReview() {
+        let json = #"[{"status":"review","agent":{"machine":"Mac","pane":"wJ:p1"}}]"#.data(using: .utf8)!
+        let panes = BhoteReview.panes(from: json, remoteNames: [])
+        let out = BhoteReview.resolve([
+            HerdrAgent(status: "done", paneID: "wJ:p1"),
+            HerdrAgent(status: "idle", paneID: "wJ:p1"),
+            HerdrAgent(status: "working", paneID: "wJ:p1"),
+        ], panes: panes)
+        XCTAssertEqual(out.map(\.status), ["review", "review", "working"])
+    }
 }

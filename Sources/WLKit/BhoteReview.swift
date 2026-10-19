@@ -115,9 +115,10 @@ public enum BhoteReview {
                 return copy
             }
             guard agent.status == "idle" || agent.status == "done" else { return agent }
-            // `done` is already lit green; only a deployment changes it.
+            // `done` is already lit green; a question or a deployment
+            // outranks that, finished and now only matter for `idle`.
             let idle = agent.status == "idle"
-            if idle && panes.review.contains(key) {
+            if panes.review.contains(key) {
                 copy.status = "review"
             } else if panes.deploying.contains(key) {
                 copy.status = "deploying"
