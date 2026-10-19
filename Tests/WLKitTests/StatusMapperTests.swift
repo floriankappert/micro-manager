@@ -28,22 +28,28 @@ final class StatusMapperTests: XCTestCase {
     func testWorkingOutranksIdleAndDone() {
         let state = StatusMapper.aggregate([agent("done"), agent("idle"), agent("working")])
         XCTAssertEqual(state, "working")
-        XCTAssertEqual(StatusMapper.zone(for: state)?.color, 0xFF6A00)
+        XCTAssertEqual(StatusMapper.zone(for: state)?.color, 0xFFA000)
     }
 
     func testUnrecognisedStatusStillYieldsAState() {
         XCTAssertEqual(StatusMapper.aggregate([agent("wat")]), "unknown")
     }
 
-    func testBlockedAndWorkingBreatheAtDifferentPaces() {
-        XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .breath)
-        XCTAssertEqual(StatusMapper.threads(for: [agent("working")])[0].effect, .breath)
+    func testOnlyTestingAndDeployingBreathe() {
+        let cfg = BridgeConfig()
+        for state in ["blocked", "working", "review", "done", "finished"] {
+            XCTAssertEqual(cfg.effect(for: state), .solid, state)
+        }
+        for state in ["testing", "deploying"] {
+            XCTAssertEqual(cfg.effect(for: state), .breath, state)
+        }
+        XCTAssertEqual(StatusMapper.threads(for: [agent("working")])[0].effect, .solid)
     }
 
     func testUnderglowStaysSteadyWhileWorking() {
         XCTAssertEqual(StatusMapper.zone(for: "working")?.effect, .solid)
-        XCTAssertEqual(StatusMapper.zone(for: "working")?.color, 0xFF6A00)
-        XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .breath)
+        XCTAssertEqual(StatusMapper.zone(for: "working")?.color, 0xFFA000)
+        XCTAssertEqual(StatusMapper.zone(for: "blocked")?.effect, .solid)
     }
 
     // MARK: - Per-key
@@ -56,7 +62,7 @@ final class StatusMapperTests: XCTestCase {
         // The pad's top row is wired right to left, so reading order starts
         // at key 1: the first agent lights the top-LEFT key.
         XCTAssertEqual(threads.map(\.id), [1, 0, 2, 3, 4, 5], "keys in reading order")
-        XCTAssertEqual(threads[0].color, 0xFF6A00)
+        XCTAssertEqual(threads[0].color, 0xFFA000)
         XCTAssertEqual(threads[1].color, 0xFF2D2D)
         XCTAssertEqual(threads[2].effect, .off, "idle is dark")
     }
@@ -68,13 +74,6 @@ final class StatusMapperTests: XCTestCase {
             XCTAssertEqual(thread.brightness, 0)
             XCTAssertNil(thread.color, "no colour on an unused key")
         }
-    }
-
-    func testBlockedAgentBreathesFasterOnItsOwnKey() {
-        let threads = StatusMapper.threads(for: [agent("working"), agent("blocked")])
-        XCTAssertEqual(threads[0].effect, .breath)
-        XCTAssertEqual(threads[1].effect, .breath)
-        XCTAssertGreaterThan(threads[1].speed ?? 0, threads[0].speed ?? 0)
     }
 
     func testMoreAgentsThanKeysDoesNotOverflow() {
@@ -146,7 +145,7 @@ extension StatusMapperTests {
         // and seen. Different signals: one is lit, the other is dark.
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "done"), 0x00C853)
-        XCTAssertEqual(cfg.effect(for: "done"), .breath)
+        XCTAssertEqual(cfg.effect(for: "done"), .solid)
         XCTAssertEqual(cfg.effect(for: "idle"), .off)
         XCTAssertEqual(cfg.brightness(for: "idle"), 0)
         XCTAssertNil(StatusMapper.zone(for: "idle"))
@@ -168,7 +167,7 @@ extension StatusMapperTests {
             HerdrAgent(status: "idle", paneID: "w1:p2"),
         ])
         XCTAssertEqual(threads[0].color, 0x00C853)
-        XCTAssertEqual(threads[0].effect, .breath)
+        XCTAssertEqual(threads[0].effect, .solid)
         XCTAssertEqual(threads[1].effect, .off)
         XCTAssertEqual(threads[1].brightness, 0)
     }
@@ -178,7 +177,7 @@ extension StatusMapperTests {
     func testEveryStatusColourIsPinned() {
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "blocked"), 0xFF2D2D)
-        XCTAssertEqual(cfg.color(for: "working"), 0xFF6A00)
+        XCTAssertEqual(cfg.color(for: "working"), 0xFFA000)
         XCTAssertEqual(cfg.color(for: "done"), 0x00C853)
     }
 
@@ -189,12 +188,10 @@ extension StatusMapperTests {
         XCTAssertNil(StatusMapper.zone(for: "unknown"))
     }
 
-    func testCalmIsDarkAndAttentionBreathes() {
+    func testCalmIsDarkAndAttentionIsFull() {
         let cfg = BridgeConfig()
         XCTAssertLessThan(cfg.brightness(for: "working"), cfg.brightness(for: "blocked"))
-        XCTAssertEqual(cfg.effect(for: "blocked"), .breath)
-        XCTAssertEqual(cfg.effect(for: "done"), .breath)
-        XCTAssertLessThan(cfg.speed(for: "done"), cfg.speed(for: "blocked"))
+        XCTAssertEqual(cfg.brightness(for: "idle"), 0)
     }
 }
 
@@ -290,11 +287,10 @@ extension StatusMapperTests {
                        "pane ids repeat across machines, so the host decides")
     }
 
-    func testReviewBreathesRedSlowerThanBlockedAndOutranksIdle() {
+    func testReviewIsSteadyBlueAndOutranksIdle() {
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "review"), 0x2979FF)
-        XCTAssertEqual(cfg.effect(for: "review"), .breath)
-        XCTAssertLessThan(cfg.speed(for: "review"), cfg.speed(for: "blocked"))
+        XCTAssertEqual(cfg.effect(for: "review"), .solid)
         XCTAssertEqual(StatusMapper.aggregate([agent("idle"), agent("review")]), "review")
     }
 
@@ -321,11 +317,10 @@ extension StatusMapperTests {
         XCTAssertEqual(out.map(\.status), ["finished", "review", "working"])
     }
 
-    func testFinishedIsGreenAndQuickerThanDone() {
+    func testFinishedIsSteadyGreen() {
         let cfg = BridgeConfig()
         XCTAssertEqual(cfg.color(for: "finished"), 0x00C853)
-        XCTAssertEqual(cfg.effect(for: "finished"), .breath)
-        XCTAssertGreaterThan(cfg.speed(for: "finished"), cfg.speed(for: "done"))
+        XCTAssertEqual(cfg.effect(for: "finished"), .solid)
         XCTAssertEqual(StatusMapper.aggregate([agent("done"), agent("finished")]), "finished")
     }
 
@@ -340,7 +335,7 @@ extension StatusMapperTests {
         ], panes: panes)
         XCTAssertEqual(out.map(\.status), ["testing", "testing", "working"])
         let cfg = BridgeConfig()
-        XCTAssertEqual(cfg.color(for: "testing"), 0xFFB300)
+        XCTAssertEqual(cfg.color(for: "testing"), 0xFF5A00)
         XCTAssertEqual(cfg.effect(for: "testing"), .breath)
     }
 
@@ -359,5 +354,21 @@ extension StatusMapperTests {
             HerdrAgent(status: "working", paneID: "wJ:p1"),
         ], panes: panes)
         XCTAssertEqual(out.map(\.status), ["finished", "working"])
+    }
+
+    func testDeployingIsItsOwnLemonYellowNextToWorkingAndTesting() {
+        let json = #"[{"status":"waiting","waiting_for":"Deployment","agent":{"machine":"Mac","pane":"wJ:p1"}},{"status":"waiting","waiting_for":"Alex","agent":{"machine":"Mac","pane":"wK:p1"}}]"#.data(using: .utf8)!
+        let panes = BhoteReview.panes(from: json, remoteNames: [])
+        XCTAssertEqual(panes.deploying, ["|wJ:p1"])
+        let out = BhoteReview.resolve([
+            HerdrAgent(status: "idle", paneID: "wJ:p1"),
+            HerdrAgent(status: "idle", paneID: "wK:p1"),
+            HerdrAgent(status: "working", paneID: "wJ:p1"),
+        ], panes: panes)
+        XCTAssertEqual(out.map(\.status), ["deploying", "idle", "working"])
+        let cfg = BridgeConfig()
+        let colors = [cfg.color(for: "working"), cfg.color(for: "testing"), cfg.color(for: "deploying")]
+        XCTAssertEqual(Set(colors).count, 3)
+        XCTAssertEqual(cfg.color(for: "deploying"), 0xFFE600)
     }
 }

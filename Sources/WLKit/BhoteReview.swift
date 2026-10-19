@@ -23,8 +23,14 @@ public enum BhoteReview {
         /// The topic is still `now`. An agent that has stopped under such a
         /// topic is finished, which is how bhote's panel lists it too.
         public var now: Set<String> = []
-        public var isEmpty: Bool { review.isEmpty && finished.isEmpty && testing.isEmpty && now.isEmpty }
-        public init(review: Set<String> = [], finished: Set<String> = [], testing: Set<String> = [], now: Set<String> = []) {
+        /// The topic waits for a deployment of its project.
+        public var deploying: Set<String> = []
+        public var isEmpty: Bool {
+            review.isEmpty && finished.isEmpty && testing.isEmpty && now.isEmpty && deploying.isEmpty
+        }
+        public init(review: Set<String> = [], finished: Set<String> = [], testing: Set<String> = [],
+                    now: Set<String> = [], deploying: Set<String> = []) {
+            self.deploying = deploying
             self.review = review
             self.finished = finished
             self.testing = testing
@@ -41,13 +47,15 @@ public enum BhoteReview {
         var panes = Panes()
         for topic in topics {
             let status = topic["status"] as? String
-            guard status == "review" || status == "finished" || status == "testing" || status == "now",
+            let deploy = status == "waiting" && topic["waiting_for"] as? String == "Deployment"
+            guard status == "review" || status == "finished" || status == "testing" || status == "now" || deploy,
                   let agent = topic["agent"] as? [String: Any],
                   let pane = agent["pane"] as? String, !pane.isEmpty
             else { continue }
             let label = (agent["machine"] as? String ?? "").lowercased()
             let host = remoteNames.first { $0.lowercased() == label } ?? ""
             let key = "\(host)|\(pane)"
+            if deploy { panes.deploying.insert(key); continue }
             switch status {
             case "review": panes.review.insert(key)
             case "testing": panes.testing.insert(key)
@@ -91,7 +99,8 @@ public enum BhoteReview {
 
     /// Herdr's `idle` agents that bhote has in review become `review`, those
     /// with a finished topic `finished`. An agent whose tests run is `testing`
-    /// whether Herdr calls it `idle` or `done`. A working or blocked agent
+    /// whether Herdr calls it `idle` or `done`; one whose topic waits for a
+    /// deployment is `deploying`. A working or blocked agent
     /// keeps its status: it is not waiting any more.
     public static func resolve(_ agents: [HerdrAgent], panes: Panes) -> [HerdrAgent] {
         guard !panes.isEmpty else { return agents }
@@ -105,6 +114,8 @@ public enum BhoteReview {
                 return agent
             } else if panes.review.contains(key) {
                 copy.status = "review"
+            } else if panes.deploying.contains(key) {
+                copy.status = "deploying"
             } else if panes.finished.contains(key) || panes.now.contains(key) {
                 copy.status = "finished"
             } else {

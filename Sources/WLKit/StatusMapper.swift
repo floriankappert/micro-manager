@@ -11,14 +11,16 @@ import SwiftUI
 public struct BridgeConfig: Sendable {
     /// Highest priority first: the first state present across all agents wins
     /// the underglow.
-    public var priority: [String] = ["blocked", "working", "testing", "review", "finished", "done", "idle", "unknown"]
+    public var priority: [String] = ["blocked", "working", "testing", "deploying", "review", "finished", "done", "idle", "unknown"]
     public var colors: [String: Int] = [
         "blocked": 0xFF2D2D,
-        "working": 0xFF6A00,
-        // Bhote's own roles, in LED-strength versions of the same hues
-        // (pastels wash out to white on an LED): testing is its peach/yellow
-        // `C`, review its blue, offline its muted grey.
-        "testing": 0xFFB300,
+        // Three neighbours that must stay apart: working is yellow-orange,
+        // testing a true orange, deploying lemon yellow. LED-strength
+        // versions of bhote's hues (pastels wash out to white on an LED);
+        // review is its blue, offline its muted grey.
+        "working": 0xFFA000,
+        "testing": 0xFF5A00,
+        "deploying": 0xFFE600,
         // Herdr reports "done" for an agent that has finished and that you
         // have not looked at yet, and "idle" once it is focused. That is a
         // real difference - one is waiting to be read, the other is just
@@ -35,20 +37,22 @@ public struct BridgeConfig: Sendable {
         "offline": 0x607080,
         "unknown": 0x000000,
     ]
+    /// Only the two "something is in progress elsewhere" states breathe;
+    /// everything else is a steady light.
     public var effects: [String: OAI.Effect] = [
-        "blocked": .breath,
-        "working": .breath,
+        "blocked": .solid,
+        "working": .solid,
         "testing": .breath,
+        "deploying": .breath,
         "offline": .solid,
         "idle": .off,
-        "done": .breath,
-        "review": .breath,
-        "finished": .breath,
+        "done": .solid,
+        "review": .solid,
+        "finished": .solid,
         "unknown": .off,
     ]
-    /// Where the underglow differs from the keys: it lights the whole pad, so
-    /// it stays steady while an agent works and only breathes when something
-    /// needs you.
+    /// Where the underglow differs from the keys. Nothing does any more: only
+    /// testing and deploying breathe, on the keys and the underglow alike.
     public var zoneEffects: [String: OAI.Effect] = [
         "working": .solid,
     ]
@@ -61,17 +65,15 @@ public struct BridgeConfig: Sendable {
         "finished": 1,
         "working": 0.8,
         "testing": 0.8,
+        "deploying": 0.8,
         "offline": 0.25,
         "idle": 0,
         "unknown": 0,
     ]
-    /// Breathing pace: urgent is quick, "finished, read me" is slow, and
-    /// working sits between at the default.
+    /// Breathing pace of the two states that breathe.
     public var speeds: [String: Double] = [
-        "blocked": 0.35,
-        "done": 0.12,
-        "review": 0.2,
-        "finished": 0.35,
+        "testing": 0.6,
+        "deploying": 0.6,
     ]
     /// The stack key is not an agent, so it gets a colour of its own rather
     /// than borrowing one of the status colours.
