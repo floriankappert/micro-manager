@@ -197,14 +197,11 @@ extension StatusMapperTests {
 
 extension StatusMapperTests {
 
-    func testVoiceKeyIsAlwaysRedAndBreathesOnlyWhileListening() {
-        let rest = StatusMapper.voiceThread(id: 12, active: false)
-        let listening = StatusMapper.voiceThread(id: 12, active: true)
-        XCTAssertEqual(rest.color, 0xFF3B30)
-        XCTAssertEqual(rest.effect, .solid)
-        XCTAssertEqual(rest.brightness, BridgeConfig().brightness)
-        XCTAssertEqual(listening.color, 0xFF3B30)
-        XCTAssertEqual(listening.effect, .breath)
+    func testVoiceKeyIsAlwaysSteadyPurple() {
+        let voice = StatusMapper.voiceThread(id: 12)
+        XCTAssertEqual(voice.color, 0xAA00FF)
+        XCTAssertEqual(voice.effect, .solid)
+        XCTAssertEqual(voice.brightness, BridgeConfig().brightness)
     }
 
     func testReturnKeyIsAlwaysDarkAndOtherActionsStayQuiet() {

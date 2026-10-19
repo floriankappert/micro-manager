@@ -433,7 +433,7 @@ public final class BridgeController: ObservableObject {
                 return boundThread(key, config)
             }
             if keyBindings.voiceKeys.contains(key) {
-                return StatusMapper.voiceThread(id: key, active: voiceActive, config)
+                return StatusMapper.voiceThread(id: key, config)
             }
             return OAI.Thread(id: key, brightness: 0, effect: .off)
         }
